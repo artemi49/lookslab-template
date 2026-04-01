@@ -209,7 +209,7 @@ export default function ImageCreateScreen() {
   const [combinedScore, setCombinedScore] = useState(8.05);
   const [autoCombined, setAutoCombined] = useState(true);
 
-  const [cardLang, setCardLang] = useState<CardLocale>("en");
+  const cardLang: CardLocale = "en";
   const [percentileLabel, setPercentileLabel] = useState(() =>
     getPercentileLabelLocalized(calculatePercentile(8.05), "en")
   );
@@ -225,10 +225,10 @@ export default function ImageCreateScreen() {
     const top = Math.max(1, Math.min(99, populationTopPercent));
     if (top <= 50) {
       const n = Math.max(2, Math.round(100 / top));
-      return cardLang === "de" ? `1 von ${n}` : `1 in ${n}`;
+      return `1 in ${n}`;
     }
     return "";
-  }, [populationTopPercent, cardLang]);
+  }, [populationTopPercent]);
 
   const populationSliderUiValue = 100 - populationTopPercent;
 
@@ -319,39 +319,6 @@ export default function ImageCreateScreen() {
       portraitImgRef.current = img;
     }).catch(() => {});
   }, [portraitPreview]);
-
-  const importFromScan = useCallback(() => {
-    const s = useAppStore.getState();
-    if (s.frontImageUrl) {
-      setFrontPreview(s.frontImageUrl);
-      loadImageFromUrl(s.frontImageUrl).then((img) => {
-        frontImgRef.current = img;
-      }).catch(() => {});
-    }
-    if (s.sideImageUrl || s.sideFlippedUrl) {
-      const u = s.sideFlippedUrl || s.sideImageUrl!;
-      setSidePreview(u);
-      loadImageFromUrl(u).then((img) => {
-        sideImgRef.current = img;
-      }).catch(() => {});
-    }
-    if (s.frontResult) setFrontScore(s.frontResult.harmonyScore);
-    if (s.sideResult) setSideScore(s.sideResult.harmonyScore);
-    const comb = calculateCombinedScore(
-      s.frontResult?.harmonyScore ?? null,
-      s.sideResult?.harmonyScore ?? null
-    );
-    setCombinedScore(comb);
-    const p = calculatePercentile(comb);
-    setPercentileLabel(getPercentileLabelLocalized(p, cardLang));
-    setPopulationTopOverride(null);
-    setPortraitPreview(s.frontImageUrl);
-    if (s.frontImageUrl) {
-      loadImageFromUrl(s.frontImageUrl).then((img) => {
-        portraitImgRef.current = img;
-      }).catch(() => {});
-    }
-  }, [cardLang]);
 
   const exportPng = async () => {
     const el = exportCardRef.current;
@@ -502,15 +469,8 @@ export default function ImageCreateScreen() {
           <div className="flex flex-col sm:flex-row flex-wrap gap-2 w-full sm:w-auto">
             <button
               type="button"
-              onClick={importFromScan}
-              className="app-btn-secondary px-4 py-2.5 rounded-xl text-sm font-semibold cursor-pointer w-full sm:w-auto"
-            >
-              Import from current scan
-            </button>
-            <button
-              type="button"
               onClick={exportPng}
-              className="app-btn-primary px-5 py-2.5 rounded-xl text-sm font-semibold cursor-pointer w-full sm:w-auto"
+              className="app-btn-primary px-5 py-2.5 rounded-xl text-sm font-semibold cursor-pointer w-full sm:w-auto hidden sm:inline-flex"
             >
               Download PNG
             </button>
@@ -535,27 +495,6 @@ export default function ImageCreateScreen() {
               </button>
             ))}
           </div>
-          <div
-            className="flex rounded-xl border border-black/10 p-0.5 bg-white/75"
-            role="group"
-            aria-label="Card language"
-          >
-            {(["en", "de"] as const).map((lng) => (
-              <button
-                key={lng}
-                type="button"
-                onClick={() => setCardLang(lng)}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide min-w-[44px]",
-                  cardLang === lng
-                    ? "bg-[#8CB3F2]/40 text-slate-900 shadow-sm"
-                    : "text-slate-500 hover:text-slate-800"
-                )}
-              >
-                {lng}
-              </button>
-            ))}
-          </div>
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(320px,420px)_1fr] gap-6 sm:gap-8 items-start">
@@ -571,7 +510,7 @@ export default function ImageCreateScreen() {
                         htmlFor="front-file-input"
                         className="inline-flex items-center justify-center h-10 px-4 rounded-xl border border-black/10 bg-white/85 text-sm font-semibold text-slate-700 cursor-pointer hover:bg-white transition"
                       >
-                        Datei auswählen
+                        Select file
                       </label>
                       {frontPreview && (
                         <button
@@ -579,7 +518,7 @@ export default function ImageCreateScreen() {
                           onClick={() => clearFile(setFrontPreview, frontImgRef)}
                           className="inline-flex items-center justify-center h-10 px-3 rounded-xl border border-rose-200 bg-rose-50 text-xs font-semibold text-rose-600 hover:bg-rose-100 transition"
                         >
-                          Entfernen
+                          Remove
                         </button>
                       )}
                     </div>
@@ -590,7 +529,7 @@ export default function ImageCreateScreen() {
                       className="sr-only"
                       onChange={(e) => onFile(e.target.files?.[0] ?? null, setFrontPreview, frontImgRef)}
                     />
-                    <p className="text-[11px] text-slate-500 mt-1.5">{frontPreview ? "Datei ausgewählt" : "Keine Datei ausgewählt"}</p>
+                    <p className="text-[11px] text-slate-500 mt-1.5">{frontPreview ? "File selected" : "No file selected"}</p>
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-2">Side (optional)</label>
@@ -599,7 +538,7 @@ export default function ImageCreateScreen() {
                         htmlFor="side-file-input"
                         className="inline-flex items-center justify-center h-10 px-4 rounded-xl border border-black/10 bg-white/85 text-sm font-semibold text-slate-700 cursor-pointer hover:bg-white transition"
                       >
-                        Datei auswählen
+                        Select file
                       </label>
                       {sidePreview && (
                         <button
@@ -607,7 +546,7 @@ export default function ImageCreateScreen() {
                           onClick={() => clearFile(setSidePreview, sideImgRef)}
                           className="inline-flex items-center justify-center h-10 px-3 rounded-xl border border-rose-200 bg-rose-50 text-xs font-semibold text-rose-600 hover:bg-rose-100 transition"
                         >
-                          Entfernen
+                          Remove
                         </button>
                       )}
                     </div>
@@ -618,7 +557,7 @@ export default function ImageCreateScreen() {
                       className="sr-only"
                       onChange={(e) => onFile(e.target.files?.[0] ?? null, setSidePreview, sideImgRef)}
                     />
-                    <p className="text-[11px] text-slate-500 mt-1.5">{sidePreview ? "Datei ausgewählt" : "Keine Datei ausgewählt"}</p>
+                    <p className="text-[11px] text-slate-500 mt-1.5">{sidePreview ? "File selected" : "No file selected"}</p>
                   </div>
                 </div>
                 <div className="app-card-strong p-5 space-y-4">
@@ -649,7 +588,7 @@ export default function ImageCreateScreen() {
                   <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold">Copy</div>
                   <TextField label="Headline" value={percentileLabel} onChange={setPercentileLabel} />
                   <Field
-                    label={cardLang === "de" ? "Top-%" : "Top %"}
+                    label="Top %"
                     type="number"
                     step="1"
                     value={populationTopPercent}
@@ -661,9 +600,7 @@ export default function ImageCreateScreen() {
                   />
                   <label className="block">
                     <span className="text-xs font-medium text-slate-600">
-                      {cardLang === "de"
-                        ? "Top % — Kurve (links häufiger · rechts seltener)"
-                        : "Top % — curve (more common left · rarer right)"}
+                      Top % — curve (more common left · rarer right)
                     </span>
                     <input
                       type="range"
@@ -677,11 +614,7 @@ export default function ImageCreateScreen() {
                         setPopulationTopOverride(null);
                         setCombinedScore(percentileToScore(topPct));
                       }}
-                      aria-label={
-                        cardLang === "de"
-                          ? "Top-Prozent für die Kurve: links häufiger, rechts seltener"
-                          : "Top percent for curve: more common on the left, rarer on the right"
-                      }
+                      aria-label="Top percent for curve: more common on the left, rarer on the right"
                     />
                     <div className="flex justify-between text-[10px] font-medium text-slate-400 mt-1">
                       <span>Top 99%</span>
@@ -691,7 +624,7 @@ export default function ImageCreateScreen() {
                   </label>
                   <label className="block">
                     <span className="text-xs font-medium text-slate-600">
-                      {cardLang === "de" ? "Seltenheit (score-basiert)" : "Rarity (score-based)"}
+                      Rarity (score-based)
                     </span>
                     <input
                       className="mt-1 w-full h-10 rounded-xl border border-black/10 bg-slate-50 px-3 text-sm text-slate-700"
@@ -701,7 +634,7 @@ export default function ImageCreateScreen() {
                   </label>
                   <div className="space-y-2">
                     <span className="text-xs font-medium text-slate-600">
-                      {cardLang === "de" ? "Typische Ratios (max. 5)" : "Typical ratios (max 5)"}
+                      Typical ratios (max 5)
                     </span>
                     <div className="flex gap-2">
                       <select
@@ -755,7 +688,7 @@ export default function ImageCreateScreen() {
                         htmlFor="portrait-file-input"
                         className="inline-flex items-center justify-center h-10 px-4 rounded-xl border border-black/10 bg-white/85 text-sm font-semibold text-slate-700 cursor-pointer hover:bg-white transition"
                       >
-                        Datei auswählen
+                        Select file
                       </label>
                       {portraitPreview && (
                         <button
@@ -763,7 +696,7 @@ export default function ImageCreateScreen() {
                           onClick={() => clearFile(setPortraitPreview, portraitImgRef)}
                           className="inline-flex items-center justify-center h-10 px-3 rounded-xl border border-rose-200 bg-rose-50 text-xs font-semibold text-rose-600 hover:bg-rose-100 transition"
                         >
-                          Entfernen
+                          Remove
                         </button>
                       )}
                     </div>
@@ -774,7 +707,7 @@ export default function ImageCreateScreen() {
                       className="sr-only"
                       onChange={(e) => onFile(e.target.files?.[0] ?? null, setPortraitPreview, portraitImgRef)}
                     />
-                    <p className="text-[11px] text-slate-500 mt-1.5">{portraitPreview ? "Datei ausgewählt" : "Keine Datei ausgewählt"}</p>
+                    <p className="text-[11px] text-slate-500 mt-1.5">{portraitPreview ? "File selected" : "No file selected"}</p>
                   </div>
                 </div>
                 <div className="app-card-strong p-5 space-y-4">
@@ -861,7 +794,7 @@ export default function ImageCreateScreen() {
           <div className="min-w-0">
             <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold mb-1">Preview</div>
             <p className="text-xs text-slate-500 mb-3">
-              Vollständige 9:16-Karte (Story/TikTok). PNG-Export in hoher Qualität: 1440 × 2560.
+              Full 9:16 card (Story/TikTok). High-quality PNG export: 1440 × 2560.
             </p>
             <div
               ref={previewScrollRef}
@@ -895,6 +828,13 @@ export default function ImageCreateScreen() {
               )}
             </div>
             <p className="text-xs text-slate-500 mt-4">Educational use only.</p>
+            <button
+              type="button"
+              onClick={exportPng}
+              className="app-btn-primary mt-4 px-5 py-2.5 rounded-xl text-sm font-semibold cursor-pointer w-full sm:hidden"
+            >
+              Download PNG
+            </button>
           </div>
         </div>
       </div>
