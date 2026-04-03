@@ -1,6 +1,5 @@
 "use client";
 
-import { useAppStore } from "@/store/useAppStore";
 import { cn } from "@/lib/cn";
 import {
   calculateCombinedScore,
@@ -46,9 +45,12 @@ const EXPORT_IMAGE_PLACEHOLDER =
 const TIKTOK_EXPORT_WIDTH = 1440;
 const TIKTOK_EXPORT_HEIGHT = 2560;
 
-/** Canonical CSS width the card is always rendered at during export, regardless of viewport. */
-const CANONICAL_CARD_WIDTH = 420;
-const CANONICAL_CARD_HEIGHT = Math.round(CANONICAL_CARD_WIDTH * 16 / 9);
+/**
+ * Every PNG is captured from this exact CSS pixel frame so typography/layout match on all devices.
+ * Preview may scale down on narrow screens; export temporarily snaps the live node to this box.
+ */
+const EXPORT_CARD_CSS_WIDTH = 420;
+const EXPORT_CARD_CSS_HEIGHT = Math.round((EXPORT_CARD_CSS_WIDTH * 16) / 9);
 
 /** Safe `url("...")` for CSS (blob/data URLs). html2canvas rasterizes `background-size: cover` more faithfully than `<img object-fit>`. */
 function cssBackgroundUrl(href: string): string {
@@ -162,38 +164,32 @@ async function normalizeToTikTokSize(blob: Blob): Promise<Blob | null> {
  * Primary raster path for Next.js / Turbopack: avoids html-to-image reading `document.styleSheets[].cssRules`
  * (opaque cross-origin sheets → SecurityError). html-to-image is only used as fallback with `skipFonts: true`.
  *
- * Do not pass html2canvas `width`/`height` — those must match its internal `parseBounds` size. Overriding them
- * (especially with `scrollHeight`) stretches type relative to the preview.
+ * Measure the live node after `exportPng` snaps it to `EXPORT_CARD_CSS_*`, set `windowWidth`/`windowHeight`
+ * to that exact box, and keep `onclone` minimal — mismatched iframe viewport size produces blank PNGs.
  */
 async function cardToPngBlobHtml2Canvas(el: HTMLElement, targetWidth: number): Promise<Blob | null> {
-  const cssW = CANONICAL_CARD_WIDTH;
-  const cssH = CANONICAL_CARD_HEIGHT;
+  const rect = el.getBoundingClientRect();
+  const cssW = Math.max(1, rect.width);
+  const cssH = Math.max(1, rect.height);
   const scale = targetWidth / cssW;
 
   const canvas = await html2canvas(el, {
     scale,
     width: cssW,
     height: cssH,
-    windowWidth: 1024,
-    windowHeight: Math.round(1024 * 16 / 9),
+    windowWidth: cssW,
+    windowHeight: cssH,
     useCORS: true,
     allowTaint: false,
     logging: false,
-    backgroundColor: SHARE_CARD_EXPORT_BG,
+    backgroundColor: null,
     foreignObjectRendering: false,
     onclone(clonedDoc, clonedEl) {
-      clonedEl.style.position = "absolute";
-      clonedEl.style.left = "0";
-      clonedEl.style.top = "0";
       clonedEl.style.width = `${cssW}px`;
-      clonedEl.style.minWidth = `${cssW}px`;
-      clonedEl.style.maxWidth = `${cssW}px`;
       clonedEl.style.height = `${cssH}px`;
-      clonedEl.style.minHeight = `${cssH}px`;
-      clonedEl.style.maxHeight = `${cssH}px`;
+      clonedEl.style.maxWidth = "none";
       clonedEl.style.aspectRatio = "auto";
       clonedEl.style.margin = "0";
-      clonedEl.style.overflow = "hidden";
 
       const win = clonedDoc.defaultView;
       if (!win) return;
@@ -221,8 +217,6 @@ async function cardToPngBlobHtml2Canvas(el: HTMLElement, targetWidth: number): P
 }
 
 export default function ImageCreateScreen() {
-  const setScreen = useAppStore((s) => s.setScreen);
-
   const [mode, setMode] = useState<Mode>("harmony");
 
   const [frontPreview, setFrontPreview] = useState<string | null>(null);
@@ -380,53 +374,65 @@ export default function ImageCreateScreen() {
     if (!el) return;
     if (scrollEl) scrollEl.scrollTop = 0;
 
-    await preloadShareCardFonts();
+    const prevOverflow = scrollEl?.style.overflow;
+    const prevMaxH = scrollEl?.style.maxHeight;
+    if (scrollEl) {
+      scrollEl.style.overflow = "visible";
+      scrollEl.style.maxHeight = "none";
+    }
 
-    // Snapshot every inline style we touch so we can restore after capture.
-    const saved = {
-      scrollOverflow: scrollEl?.style.overflow ?? "",
-      scrollMaxH: scrollEl?.style.maxHeight ?? "",
-      position: el.style.position,
-      left: el.style.left,
-      top: el.style.top,
-      zIndex: el.style.zIndex,
-      pointerEvents: el.style.pointerEvents,
+    await preloadShareCardFonts();
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    // `mx-auto` → large L/R margins in a wide column; zero margins so clone matches export (lookslabmedia-next).
+    const prevCardMarginLeft = el.style.marginLeft;
+    const prevCardMarginRight = el.style.marginRight;
+    el.style.marginLeft = "0";
+    el.style.marginRight = "0";
+
+    const prevExportBox = {
       width: el.style.width,
       minWidth: el.style.minWidth,
       maxWidth: el.style.maxWidth,
       height: el.style.height,
       minHeight: el.style.minHeight,
       maxHeight: el.style.maxHeight,
-      margin: el.style.margin,
       aspectRatio: el.style.aspectRatio,
     };
-
-    // Move card offscreen in a fixed-position layer so no parent can clip or
-    // constrain it, and force the exact canonical 9:16 box (420 × 747).
-    if (scrollEl) {
-      scrollEl.style.overflow = "visible";
-      scrollEl.style.maxHeight = "none";
-    }
-    el.style.position = "absolute";
-    el.style.left = "-9999px";
-    el.style.top = "0";
-    el.style.zIndex = "-1";
-    el.style.pointerEvents = "none";
-    el.style.width = `${CANONICAL_CARD_WIDTH}px`;
-    el.style.minWidth = `${CANONICAL_CARD_WIDTH}px`;
-    el.style.maxWidth = `${CANONICAL_CARD_WIDTH}px`;
-    el.style.height = `${CANONICAL_CARD_HEIGHT}px`;
-    el.style.minHeight = `${CANONICAL_CARD_HEIGHT}px`;
-    el.style.maxHeight = `${CANONICAL_CARD_HEIGHT}px`;
-    el.style.margin = "0";
+    el.style.width = `${EXPORT_CARD_CSS_WIDTH}px`;
+    el.style.minWidth = `${EXPORT_CARD_CSS_WIDTH}px`;
+    el.style.maxWidth = `${EXPORT_CARD_CSS_WIDTH}px`;
+    el.style.height = `${EXPORT_CARD_CSS_HEIGHT}px`;
+    el.style.minHeight = `${EXPORT_CARD_CSS_HEIGHT}px`;
+    el.style.maxHeight = `${EXPORT_CARD_CSS_HEIGHT}px`;
     el.style.aspectRatio = "auto";
+
     void el.offsetWidth;
-
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-    await new Promise<void>((r) => setTimeout(r, 150));
+    await new Promise<void>((r) => setTimeout(r, 80));
 
-    const w = CANONICAL_CARD_WIDTH;
-    const h = CANONICAL_CARD_HEIGHT;
+    const br = el.getBoundingClientRect();
+    const w = Math.max(2, Math.round(br.width));
+    let h = Math.max(2, Math.round(br.height));
+    h = Math.min(h, 8192);
+    if (w < 2 || h < 2) {
+      el.style.width = prevExportBox.width;
+      el.style.minWidth = prevExportBox.minWidth;
+      el.style.maxWidth = prevExportBox.maxWidth;
+      el.style.height = prevExportBox.height;
+      el.style.minHeight = prevExportBox.minHeight;
+      el.style.maxHeight = prevExportBox.maxHeight;
+      el.style.aspectRatio = prevExportBox.aspectRatio;
+      el.style.marginLeft = prevCardMarginLeft;
+      el.style.marginRight = prevCardMarginRight;
+      if (scrollEl) {
+        scrollEl.style.overflow = prevOverflow ?? "";
+        scrollEl.style.maxHeight = prevMaxH ?? "";
+      }
+      return;
+    }
+
     const targetW = TIKTOK_EXPORT_WIDTH;
     const pixelRatio = targetW / w;
 
@@ -481,22 +487,18 @@ export default function ImageCreateScreen() {
     } catch (e) {
       console.error("PNG export failed:", e);
     } finally {
-      el.style.position = saved.position;
-      el.style.left = saved.left;
-      el.style.top = saved.top;
-      el.style.zIndex = saved.zIndex;
-      el.style.pointerEvents = saved.pointerEvents;
-      el.style.width = saved.width;
-      el.style.minWidth = saved.minWidth;
-      el.style.maxWidth = saved.maxWidth;
-      el.style.height = saved.height;
-      el.style.minHeight = saved.minHeight;
-      el.style.maxHeight = saved.maxHeight;
-      el.style.margin = saved.margin;
-      el.style.aspectRatio = saved.aspectRatio;
+      el.style.width = prevExportBox.width;
+      el.style.minWidth = prevExportBox.minWidth;
+      el.style.maxWidth = prevExportBox.maxWidth;
+      el.style.height = prevExportBox.height;
+      el.style.minHeight = prevExportBox.minHeight;
+      el.style.maxHeight = prevExportBox.maxHeight;
+      el.style.aspectRatio = prevExportBox.aspectRatio;
+      el.style.marginLeft = prevCardMarginLeft;
+      el.style.marginRight = prevCardMarginRight;
       if (scrollEl) {
-        scrollEl.style.overflow = saved.scrollOverflow;
-        scrollEl.style.maxHeight = saved.scrollMaxH;
+        scrollEl.style.overflow = prevOverflow ?? "";
+        scrollEl.style.maxHeight = prevMaxH ?? "";
       }
     }
   };
@@ -527,31 +529,31 @@ export default function ImageCreateScreen() {
   };
 
   return (
-    <div className="min-h-full app-surface p-3 sm:p-5 lg:p-8 pb-10 sm:pb-14 lg:pb-16">
-      <div className="max-w-[1400px] mx-auto">
-        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-end justify-between gap-4 mb-6 sm:mb-8">
-          <div>
+    <div className="min-h-full app-surface px-4 py-5 sm:px-6 sm:py-6 lg:px-10 lg:py-8 pb-12 sm:pb-16">
+      <div className="max-w-[1400px] mx-auto w-full">
+        <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between mb-6 sm:mb-8">
+          <div className="min-w-0">
             <p className="text-[11px] font-semibold tracking-[0.22em] text-[#5B8FD9] uppercase mb-1">Studio export</p>
-            <h1 className="text-3xl sm:text-4xl text-slate-900 font-normal leading-tight" style={{ fontFamily: "var(--font-serif)" }}>
+            <h1 className="text-[1.65rem] leading-tight sm:text-3xl md:text-4xl text-slate-900 font-normal" style={{ fontFamily: "var(--font-serif)" }}>
               Image Create
             </h1>
             <p className="text-sm text-slate-500 mt-2 max-w-xl">
               LooksLab wordmark and LooksLab.de on every export — same fonts as the app (Instrument Serif + Plus Jakarta Sans).
             </p>
           </div>
-          <div className="flex flex-col sm:flex-row flex-wrap gap-2 w-full sm:w-auto">
+          <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto shrink-0">
             <button
               type="button"
               onClick={exportPng}
-              className="app-btn-primary px-5 py-2.5 rounded-xl text-sm font-semibold cursor-pointer w-full sm:w-auto hidden sm:inline-flex"
+              className="app-btn-primary px-5 py-3 sm:py-2.5 rounded-xl text-sm font-semibold cursor-pointer w-full sm:w-auto inline-flex items-center justify-center min-h-[44px] sm:min-h-0"
             >
               Download PNG
             </button>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 mb-6">
-          <div className="flex gap-2">
+        <div className="flex flex-wrap items-stretch sm:items-center gap-2 sm:gap-3 mb-6">
+          <div className="flex flex-wrap gap-2">
             {(["harmony", "metrics"] as const).map((m) => (
               <button
                 key={m}
@@ -568,8 +570,8 @@ export default function ImageCreateScreen() {
               </button>
             ))}
           </div>
-          <span className="w-px h-5 bg-slate-300/60" aria-hidden />
-          <div className="flex gap-1">
+          <span className="hidden sm:block w-px h-5 bg-slate-300/60 self-center" aria-hidden />
+          <div className="flex flex-wrap gap-1">
             {(["en", "de"] as const).map((l) => (
               <button
                 key={l}
@@ -588,15 +590,15 @@ export default function ImageCreateScreen() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[minmax(320px,420px)_1fr] gap-6 sm:gap-8 items-start">
-          <div className="space-y-5">
+        <div className="grid grid-cols-1 gap-6 md:gap-8 xl:grid-cols-[minmax(280px,440px)_minmax(0,1fr)] xl:items-start">
+          <div className="space-y-4 sm:space-y-5 order-2 xl:order-1 min-w-0">
             {mode === "harmony" ? (
               <>
-                <div className="app-card-strong p-5 space-y-4">
+                <div className="app-card-strong p-4 sm:p-5 space-y-4">
                   <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold">Photos</div>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-2">Front (required for best result)</label>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <label
                         htmlFor="front-file-input"
                         className="inline-flex items-center justify-center h-10 px-4 rounded-xl border border-black/10 bg-white/85 text-sm font-semibold text-slate-700 cursor-pointer hover:bg-white transition"
@@ -624,7 +626,7 @@ export default function ImageCreateScreen() {
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-2">Side (optional)</label>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <label
                         htmlFor="side-file-input"
                         className="inline-flex items-center justify-center h-10 px-4 rounded-xl border border-black/10 bg-white/85 text-sm font-semibold text-slate-700 cursor-pointer hover:bg-white transition"
@@ -651,7 +653,7 @@ export default function ImageCreateScreen() {
                     <p className="text-[11px] text-slate-500 mt-1.5">{sidePreview ? "File selected" : "No file selected"}</p>
                   </div>
                 </div>
-                <div className="app-card-strong p-5 space-y-4">
+                <div className="app-card-strong p-4 sm:p-5 space-y-4">
                   <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold">Scores</div>
                   <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
                     <input
@@ -662,7 +664,7 @@ export default function ImageCreateScreen() {
                     />
                     Auto combined + percentile from scores
                   </label>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 min-[400px]:grid-cols-2 gap-3">
                     <Field label="Front /10" type="number" step="0.01" value={frontScore} onChange={(v) => setFrontScore(v)} />
                     <Field label="Side /10" type="number" step="0.01" value={sideScore} onChange={(v) => setSideScore(v)} disabled={!sidePreview} />
                   </div>
@@ -675,7 +677,7 @@ export default function ImageCreateScreen() {
                     disabled={autoCombined}
                   />
                 </div>
-                <div className="app-card-strong p-5 space-y-4">
+                <div className="app-card-strong p-4 sm:p-5 space-y-4">
                   <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold">Copy</div>
                   <TextField label="Headline" value={percentileLabel} onChange={setPercentileLabel} />
                   <Field
@@ -727,9 +729,9 @@ export default function ImageCreateScreen() {
                     <span className="text-xs font-medium text-slate-600">
                       Typical ratios (max 5)
                     </span>
-                    <div className="flex gap-2">
+                    <div className="flex flex-col min-[480px]:flex-row gap-2">
                       <select
-                        className="flex-1 h-10 rounded-xl border border-black/10 bg-white/90 px-3 text-sm"
+                        className="flex-1 min-h-10 rounded-xl border border-black/10 bg-white/90 px-3 text-sm"
                         value={ratioPicker}
                         onChange={(e) => setRatioPicker(e.target.value)}
                       >
@@ -741,7 +743,7 @@ export default function ImageCreateScreen() {
                       </select>
                       <button
                         type="button"
-                        className="app-btn-secondary h-10 px-3 rounded-xl text-xs font-semibold"
+                        className="app-btn-secondary min-h-10 h-10 px-3 rounded-xl text-xs font-semibold shrink-0"
                         onClick={() =>
                           setSelectedRatios((prev) => {
                             if (prev.includes(ratioPicker)) return prev;
@@ -771,10 +773,10 @@ export default function ImageCreateScreen() {
               </>
             ) : (
               <>
-                <div className="app-card-strong p-5 space-y-4">
+                <div className="app-card-strong p-4 sm:p-5 space-y-4">
                   <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold">Portrait</div>
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <label
                         htmlFor="portrait-file-input"
                         className="inline-flex items-center justify-center h-10 px-4 rounded-xl border border-black/10 bg-white/85 text-sm font-semibold text-slate-700 cursor-pointer hover:bg-white transition"
@@ -801,14 +803,14 @@ export default function ImageCreateScreen() {
                     <p className="text-[11px] text-slate-500 mt-1.5">{portraitPreview ? "File selected" : "No file selected"}</p>
                   </div>
                 </div>
-                <div className="app-card-strong p-5 space-y-4">
+                <div className="app-card-strong p-4 sm:p-5 space-y-4">
                   <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold">Header</div>
                   <TextField label="Title" value={title} onChange={setTitle} />
                   <TextField label="Subtitle" value={subtitle} onChange={setSubtitle} />
                 </div>
-                <div className="app-card-strong p-5 space-y-4">
+                <div className="app-card-strong p-4 sm:p-5 space-y-4">
                   <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold">Grid (5 cells)</div>
-                  <div className="space-y-3 max-h-[420px] overflow-y-auto custom-scroll pr-1">
+                  <div className="space-y-3 max-h-[min(420px,52vh)] sm:max-h-[420px] overflow-y-auto custom-scroll pr-1">
                     {metricRows.slice(0, 5).map((row, i) => (
                       <div key={i} className="rounded-xl border border-black/10 bg-white/80 p-3 space-y-2">
                         <div className="text-[10px] font-bold text-slate-400">#{i + 1}</div>
@@ -872,24 +874,16 @@ export default function ImageCreateScreen() {
                 </div>
               </>
             )}
-
-            <button
-              type="button"
-              onClick={() => setScreen("welcome")}
-              className="app-btn-secondary w-full py-3 rounded-xl text-sm font-semibold cursor-pointer"
-            >
-              Back to Dashboard
-            </button>
           </div>
 
-          <div className="min-w-0">
+          <div className="min-w-0 order-1 xl:order-2 xl:sticky xl:top-5 xl:self-start">
             <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold mb-1">Preview</div>
             <p className="text-xs text-slate-500 mb-3">
-              Full 9:16 card (Story/TikTok). High-quality PNG export: 1440 × 2560.
+              Full 9:16 card (Story/TikTok). Export is always {EXPORT_CARD_CSS_WIDTH}×{EXPORT_CARD_CSS_HEIGHT}px layout → 1440×2560 PNG.
             </p>
             <div
               ref={previewScrollRef}
-              className="max-h-[84vh] sm:max-h-[min(960px,92vh)] overflow-y-auto overflow-x-hidden custom-scroll rounded-none"
+              className="max-h-[min(72vh,820px)] sm:max-h-[min(84vh,920px)] lg:max-h-[min(88vh,960px)] overflow-y-auto overflow-x-hidden custom-scroll rounded-none -mx-1 px-1 sm:mx-0 sm:px-0"
             >
               {mode === "harmony" ? (
                 <HarmonyPreview
@@ -919,13 +913,6 @@ export default function ImageCreateScreen() {
               )}
             </div>
             <p className="text-xs text-slate-500 mt-4">Educational use only.</p>
-            <button
-              type="button"
-              onClick={exportPng}
-              className="app-btn-primary mt-4 px-5 py-2.5 rounded-xl text-sm font-semibold cursor-pointer w-full sm:hidden"
-            >
-              Download PNG
-            </button>
           </div>
         </div>
       </div>
@@ -995,7 +982,7 @@ const ShareCardPreviewChrome = forwardRef<
   return (
     <div
       ref={ref}
-      className="mx-auto w-full max-w-[min(420px,94vw)] aspect-[9/16] flex flex-col relative border border-white/80 overflow-hidden rounded-none"
+      className="mx-auto w-full max-w-[min(420px,calc(100vw-2rem))] sm:max-w-[420px] aspect-[9/16] flex flex-col relative border border-white/80 overflow-hidden rounded-none"
       style={{
         borderRadius: "0",
         overflow: "hidden",
@@ -1040,8 +1027,8 @@ const ShareCardPreviewChrome = forwardRef<
         </div>
       </header>
       <div className="px-4 pb-3 pt-1 flex-1 min-h-0 flex flex-col">{children}</div>
-      <footer className="shrink-0 border-t border-slate-200/80 bg-gradient-to-b from-white/95 to-slate-50/90 py-4 px-5 flex items-center justify-center">
-        <div className="flex items-center gap-4 text-[#4f678f]">
+      <footer className="shrink-0 border-t border-slate-200/80 bg-gradient-to-b from-white/95 to-slate-50/90 py-3.5 sm:py-4 px-3 sm:px-5 flex items-center justify-center">
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2.5 text-[#4f678f]">
           <div className="flex items-center gap-2.5">
             <span className="inline-flex items-center justify-center text-[#4A7FD4]">
               <img src="/app-store.png" alt="App Store" className="w-8 h-8 rounded-[8px] object-cover" />
@@ -1088,6 +1075,9 @@ type HarmonyPreviewProps = {
 
 const SVG_VB_WIDTH = 200;
 const SCORE_AXIS_MAX = 10;
+/** 2.5% of the 0–10 axis → 0.25 score — grid + drag snapping. */
+const SCORE_CHART_STEP = 0.25;
+const SCORE_PX_PER_UNIT = SVG_VB_WIDTH / SCORE_AXIS_MAX;
 
 const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function HarmonyPreview(
   {
@@ -1125,7 +1115,8 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
     const pxRatio = SVG_VB_WIDTH / rect.width;
     const svgX = (clientX - rect.left) * pxRatio;
     const score = (svgX / SVG_VB_WIDTH) * SCORE_AXIS_MAX;
-    return Math.round(Math.max(0, Math.min(SCORE_AXIS_MAX, score)) * 10) / 10;
+    const steps = Math.round(1 / SCORE_CHART_STEP);
+    return Math.round(Math.max(0, Math.min(SCORE_AXIS_MAX, score)) * steps) / steps;
   }, []);
 
   const handlePointerDown = useCallback(
@@ -1257,10 +1248,14 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
               onPointerUp={handlePointerUp}
               onPointerCancel={handlePointerUp}
             >
-              {/* Section divider lines — from above label down to baseline */}
-              {[2, 3, 4, 5, 6, 7, 8].map((s) => {
-                const sx = s * 20;
+              {/* Vertical grid: every 0.25 score (2.5% of axis); stronger at integers & half-points. */}
+              {Array.from({ length: Math.floor(SCORE_AXIS_MAX / SCORE_CHART_STEP) - 1 }, (_, k) => {
+                const s = (k + 1) * SCORE_CHART_STEP;
+                const sx = s * SCORE_PX_PER_UNIT;
                 const cy = scoreBasedCurveYAtX(sx, chartOpts);
+                const isInt = Number.isInteger(s);
+                const isHalf = Math.abs(s * 2 - Math.round(s * 2)) < 1e-6 && !isInt;
+                const opacity = isInt ? 0.24 : isHalf ? 0.16 : 0.1;
                 return (
                   <line
                     key={s}
@@ -1268,8 +1263,8 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
                     y1={cy - 9}
                     x2={sx}
                     y2={58}
-                    stroke="rgba(130,135,155,0.22)"
-                    strokeWidth="0.5"
+                    stroke={`rgba(130,135,155,${opacity})`}
+                    strokeWidth={isInt ? 0.55 : 0.45}
                   />
                 );
               })}
