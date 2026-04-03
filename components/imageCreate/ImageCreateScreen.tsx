@@ -4,8 +4,10 @@ import { cn } from "@/lib/cn";
 import {
   calculateCombinedScore,
   calculatePercentile,
+  calculatePercentileTopDecimal,
+  clampTopPercentDecimal,
+  formatRankTopPercent,
   getPercentileLabelLocalized,
-  getTopBottomLabel,
   percentileToScore,
   scoreBasedCurveYAtX,
   scoreBasedCurvePaths,
@@ -19,6 +21,9 @@ import html2canvas from "html2canvas";
 import { useCallback, useEffect, useMemo, useRef, useState, forwardRef, useId } from "react";
 
 type Mode = "harmony" | "metrics";
+
+/** Rank / curve “Top n%”: follow combined score, or fixed manually without changing the score. */
+type PopulationRankSource = "score" | "manual";
 
 const RATIO_LIBRARY = [
   "Eye spacing",
@@ -232,16 +237,20 @@ export default function ImageCreateScreen() {
   const [percentileLabel, setPercentileLabel] = useState(() =>
     getPercentileLabelLocalized(calculatePercentile(8.05), "en")
   );
-  /** When set, drives population curve + “Top n%” on the card; cleared when scores / auto mode change. */
+  const [populationRankSource, setPopulationRankSource] = useState<PopulationRankSource>("score");
+  /** Manual “Top n%” (0.1–99, step 0.1); only used when `populationRankSource === "manual"`. */
   const [populationTopOverride, setPopulationTopOverride] = useState<number | null>(null);
+
   const populationTopPercent = useMemo(() => {
-    const fromScore = calculatePercentile(combinedScore);
-    const v = populationTopOverride ?? fromScore;
-    return Math.max(1, Math.min(99, Math.round(v)));
-  }, [combinedScore, populationTopOverride]);
+    const fromScore = calculatePercentileTopDecimal(combinedScore);
+    if (populationRankSource === "manual") {
+      return clampTopPercentDecimal(populationTopOverride ?? fromScore);
+    }
+    return fromScore;
+  }, [combinedScore, populationRankSource, populationTopOverride]);
 
   const rarityLine = useMemo(() => {
-    const top = Math.max(1, Math.min(99, populationTopPercent));
+    const top = clampTopPercentDecimal(populationTopPercent);
     if (top <= 50) {
       const n = Math.max(2, Math.round(100 / top));
       return cardLang === "de" ? `1 von ${n}` : `1 in ${n}`;
@@ -249,11 +258,16 @@ export default function ImageCreateScreen() {
     return "";
   }, [populationTopPercent, cardLang]);
 
-  const populationSliderUiValue = 100 - populationTopPercent;
+  const populationSliderUiValue = Math.round((100 - populationTopPercent) * 10) / 10;
 
-  useEffect(() => {
-    setPopulationTopOverride(null);
-  }, [frontScore, sideScore, sidePreview, autoCombined]);
+  const applyTopPercentPreset = (raw: number) => {
+    const topPct = clampTopPercentDecimal(raw);
+    if (populationRankSource === "manual") {
+      setPopulationTopOverride(topPct);
+    } else {
+      setCombinedScore(percentileToScore(topPct));
+    }
+  };
 
   const [title, setTitle] = useState("Your profile");
   const [subtitle, setSubtitle] = useState("Harmony map");
@@ -680,41 +694,120 @@ export default function ImageCreateScreen() {
                 <div className="app-card-strong p-4 sm:p-5 space-y-4">
                   <div className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold">Copy</div>
                   <TextField label="Headline" value={percentileLabel} onChange={setPercentileLabel} />
-                  <Field
-                    label="Top %"
-                    type="number"
-                    step="1"
-                    value={populationTopPercent}
-                    onChange={(v) => {
-                      const topPct = Math.max(1, Math.min(99, Math.round(Number(v) || 1)));
-                      setPopulationTopOverride(null);
-                      setCombinedScore(percentileToScore(topPct));
-                    }}
-                  />
-                  <label className="block">
-                    <span className="text-xs font-medium text-slate-600">
-                      Top % — curve (more common left · rarer right)
-                    </span>
-                    <input
-                      type="range"
-                      className="population-slider w-full mt-2"
-                      min={1}
-                      max={99}
-                      step={1}
-                      value={populationSliderUiValue}
-                      onChange={(e) => {
-                        const topPct = Math.max(1, Math.min(99, 100 - Number(e.target.value)));
-                        setPopulationTopOverride(null);
-                        setCombinedScore(percentileToScore(topPct));
-                      }}
-                      aria-label="Top percent for curve: more common on the left, rarer on the right"
-                    />
-                    <div className="flex justify-between text-[10px] font-medium text-slate-400 mt-1">
-                      <span>Top 99%</span>
-                      <span>Top 50%</span>
-                      <span>Top 1%</span>
+                  <div className="rounded-xl border border-black/10 bg-white/60 p-3 space-y-3">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-slate-700">
+                          {cardLang === "de" ? "Top % — Kurve" : "Top % — curve"}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+                          {cardLang === "de"
+                            ? "Links häufiger · rechts seltener"
+                            : "More common left · rarer right"}
+                        </p>
+                      </div>
+                      <div
+                        className="flex shrink-0 rounded-xl border border-black/10 bg-slate-100/90 p-0.5 gap-0.5"
+                        role="group"
+                        aria-label={cardLang === "de" ? "Top-% Quelle" : "Top % source"}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPopulationRankSource("score");
+                            setPopulationTopOverride(null);
+                          }}
+                          className={cn(
+                            "px-3 py-2 rounded-lg text-[11px] font-bold uppercase tracking-wide transition-all cursor-pointer",
+                            populationRankSource === "score"
+                              ? "bg-white text-slate-900 shadow-sm border border-black/5"
+                              : "text-slate-500 hover:text-slate-700"
+                          )}
+                        >
+                          {cardLang === "de" ? "Vom Score" : "From score"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPopulationRankSource("manual");
+                            setPopulationTopOverride(calculatePercentileTopDecimal(combinedScore));
+                          }}
+                          className={cn(
+                            "px-3 py-2 rounded-lg text-[11px] font-bold uppercase tracking-wide transition-all cursor-pointer",
+                            populationRankSource === "manual"
+                              ? "bg-white text-slate-900 shadow-sm border border-black/5"
+                              : "text-slate-500 hover:text-slate-700"
+                          )}
+                        >
+                          {cardLang === "de" ? "Eigener %" : "Custom %"}
+                        </button>
+                      </div>
                     </div>
-                  </label>
+                    <Field
+                      label={cardLang === "de" ? "Top % (Rang / Kurve)" : "Top % (rank / curve)"}
+                      type="number"
+                      step="0.1"
+                      value={populationTopPercent}
+                      onChange={(v) => {
+                        const topPct = clampTopPercentDecimal(Number(v) || 0.1);
+                        if (populationRankSource === "manual") {
+                          setPopulationTopOverride(topPct);
+                        } else {
+                          setCombinedScore(percentileToScore(topPct));
+                        }
+                      }}
+                    />
+                    <div>
+                      <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+                        {cardLang === "de" ? "Schnellwahl" : "Quick presets"}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {([1, 3, 5, 10, 15, 25, 50] as const).map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => applyTopPercentPreset(p)}
+                            className="px-2.5 py-1.5 rounded-lg border border-black/10 bg-white/90 text-[10px] font-bold text-slate-600 hover:bg-[#BFDEFE]/50 hover:border-[#8CB3F2]/60 transition-colors cursor-pointer"
+                          >
+                            Top {p}%
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <label className="block">
+                      <span className="sr-only">
+                        {cardLang === "de"
+                          ? "Top-Prozent für Kurve und Rang"
+                          : "Top percent for curve and rank"}
+                      </span>
+                      <input
+                        type="range"
+                        className="population-slider w-full mt-1"
+                        min={1}
+                        max={99.9}
+                        step={0.1}
+                        value={populationSliderUiValue}
+                        onChange={(e) => {
+                          const topPct = clampTopPercentDecimal(100 - Number(e.target.value));
+                          if (populationRankSource === "manual") {
+                            setPopulationTopOverride(topPct);
+                          } else {
+                            setCombinedScore(percentileToScore(topPct));
+                          }
+                        }}
+                        aria-label={
+                          cardLang === "de"
+                            ? "Top-Prozent: links häufiger, rechts seltener"
+                            : "Top percent: more common left, rarer right"
+                        }
+                      />
+                      <div className="flex justify-between text-[10px] font-medium text-slate-400 mt-1">
+                        <span>Top 99%</span>
+                        <span>Top 50%</span>
+                        <span>Top 1%</span>
+                      </div>
+                    </label>
+                  </div>
                   <label className="block">
                     <span className="text-xs font-medium text-slate-600">
                       Rarity (score-based)
@@ -1099,7 +1192,8 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
   const curveFilterId = useId().replace(/:/g, "");
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef(false);
-  const chartOpts = useMemo(() => ({ width: 200, baseline: 58, peakAmp: 42 }), []);
+  /** Sharper bell than N(5, 1.5²): smaller σ → steeper drop toward “Top 10%” tail. */
+  const chartOpts = useMemo(() => ({ width: 200, baseline: 58, peakAmp: 44, scoreSd: 1.05 }), []);
   const { strokeD } = useMemo(() => scoreBasedCurvePaths(chartOpts), [chartOpts]);
   const curveX = scoreBasedMarkerX(combinedScore);
   const curveY = scoreBasedCurveYAtX(curveX, chartOpts);
@@ -1219,7 +1313,7 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
             <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-400 mb-1">
               {locale === "de" ? "Rang" : "Rank"}
             </div>
-            <div className="text-[13px] font-semibold text-slate-800 tabular-nums leading-tight">{getTopBottomLabel(populationTopPercent, locale)}</div>
+            <div className="text-[13px] font-semibold text-slate-800 tabular-nums leading-tight">{formatRankTopPercent(populationTopPercent, locale)}</div>
           </div>
           {rarityLine && (
             <div className="px-2 py-3 min-h-[52px] flex flex-col justify-center">

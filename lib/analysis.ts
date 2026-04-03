@@ -9,17 +9,34 @@ export function getScoreColor(score: number): string {
   return '#DC2626';
 }
 
-export function calculatePercentile(score: number): number {
+function rawPercentileFromScore(score: number): number {
   if (score <= 0) return 99;
   const k = 1.1;
   const midpoint = 5.0;
-  const rawPercentile = 100.0 / (1.0 + Math.exp(k * (score - midpoint)));
-  return Math.max(1, Math.min(99, Math.round(rawPercentile)));
+  return 100.0 / (1.0 + Math.exp(k * (score - midpoint)));
+}
+
+export function calculatePercentile(score: number): number {
+  return Math.max(1, Math.min(99, Math.round(rawPercentileFromScore(score))));
+}
+
+/** Allowed range for “Top n%” controls (step 0.1). */
+export const TOP_PERCENT_MIN = 0.1;
+export const TOP_PERCENT_MAX = 99;
+
+export function clampTopPercentDecimal(n: number): number {
+  if (!Number.isFinite(n)) return 50;
+  return Math.round(Math.max(TOP_PERCENT_MIN, Math.min(TOP_PERCENT_MAX, n)) * 10) / 10;
+}
+
+/** Top % with 0.1 steps from combined score (rank / curve when following score). */
+export function calculatePercentileTopDecimal(score: number): number {
+  return clampTopPercentDecimal(rawPercentileFromScore(score));
 }
 
 /** Inverse of calculatePercentile: Top n% → score (0…10). */
 export function percentileToScore(topPercent: number): number {
-  const p = Math.max(1, Math.min(99, topPercent));
+  const p = Math.max(TOP_PERCENT_MIN, Math.min(TOP_PERCENT_MAX, topPercent));
   const k = 1.1;
   const midpoint = 5.0;
   const score = midpoint + Math.log(100 / p - 1) / k;
@@ -46,6 +63,18 @@ export function getTopBottomLabel(topPercent: number, locale: CardLocale = 'en')
   if (p <= 90) return `${bottom} 15%`;
   if (p <= 95) return `${bottom} 10%`;
   return `${bottom} 5%`;
+}
+
+/** Rank cell: bucket text for whole numbers, else “Top 10,3%” / “Top 10.3%”. */
+export function formatRankTopPercent(topPercent: number, locale: CardLocale = "en"): string {
+  const t = clampTopPercentDecimal(topPercent);
+  if (Math.abs(t - Math.round(t)) < 1e-6) {
+    return getTopBottomLabel(Math.round(t), locale);
+  }
+  if (locale === "de") {
+    return `Top ${t.toFixed(1).replace(".", ",")}%`;
+  }
+  return `Top ${t.toFixed(1)}%`;
 }
 
 export function getPercentileLabel(percentile: number): string {
@@ -112,13 +141,14 @@ export function scoreBasedMarkerX(score: number, width = SHARE_CURVE_WIDTH): num
 /** Pixel y on the bell curve at pixel x. */
 export function scoreBasedCurveYAtX(
   x: number,
-  opts?: { width?: number; baseline?: number; peakAmp?: number },
+  opts?: { width?: number; baseline?: number; peakAmp?: number; scoreSd?: number },
 ): number {
   const w = opts?.width ?? SHARE_CURVE_WIDTH;
   const baseline = opts?.baseline ?? SHARE_CURVE_BASELINE;
   const peakAmp = opts?.peakAmp ?? SHARE_CURVE_PEAK_AMP;
+  const sd = opts?.scoreSd ?? SCORE_SD;
   const score = (Math.max(0, Math.min(w, x)) / w) * SCORE_MAX;
-  const z = (score - SCORE_MEAN) / SCORE_SD;
+  const z = (score - SCORE_MEAN) / sd;
   return baseline - peakAmp * (normalPdf(z) / normalPdf(0));
 }
 
@@ -126,18 +156,19 @@ export type ScoreBasedCurvePaths = { strokeD: string; areaD: string };
 
 /** SVG polyline paths for the score-based N(5,1.5²) distribution. */
 export function scoreBasedCurvePaths(
-  opts?: { width?: number; baseline?: number; peakAmp?: number; steps?: number },
+  opts?: { width?: number; baseline?: number; peakAmp?: number; steps?: number; scoreSd?: number },
 ): ScoreBasedCurvePaths {
   const w = opts?.width ?? SHARE_CURVE_WIDTH;
   const baseline = opts?.baseline ?? SHARE_CURVE_BASELINE;
   const peakAmp = opts?.peakAmp ?? SHARE_CURVE_PEAK_AMP;
   const steps = opts?.steps ?? SHARE_CURVE_STEPS;
+  const sd = opts?.scoreSd ?? SCORE_SD;
   const pdf0 = normalPdf(0);
   const parts: string[] = [];
   for (let i = 0; i <= steps; i++) {
     const x = (i / steps) * w;
     const score = (x / w) * SCORE_MAX;
-    const z = (score - SCORE_MEAN) / SCORE_SD;
+    const z = (score - SCORE_MEAN) / sd;
     const y = baseline - peakAmp * (normalPdf(z) / pdf0);
     parts.push(`${i === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(3)}`);
   }
