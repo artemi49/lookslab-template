@@ -26,9 +26,12 @@ export function percentileToScore(topPercent: number): number {
   return Math.round(Math.max(0, Math.min(10, score)) * 10) / 10;
 }
 
+export type CardLocale = 'en' | 'de';
+
 /** Human-friendly "Top X%" / "Bottom X%" bucket label derived from raw percentile. */
-export function getTopBottomLabel(topPercent: number): string {
+export function getTopBottomLabel(topPercent: number, locale: CardLocale = 'en'): string {
   const p = Math.max(1, Math.min(99, Math.round(topPercent)));
+  const bottom = locale === 'de' ? 'Untere' : 'Bottom';
   if (p <= 1) return 'Top 1%';
   if (p <= 3) return 'Top 3%';
   if (p <= 5) return 'Top 5%';
@@ -37,15 +40,13 @@ export function getTopBottomLabel(topPercent: number): string {
   if (p <= 25) return 'Top 25%';
   if (p <= 35) return 'Top 35%';
   if (p <= 50) return 'Top 50%';
-  if (p <= 65) return 'Bottom 50%';
-  if (p <= 75) return 'Bottom 35%';
-  if (p <= 85) return 'Bottom 25%';
-  if (p <= 90) return 'Bottom 15%';
-  if (p <= 95) return 'Bottom 10%';
-  return 'Bottom 5%';
+  if (p <= 65) return `${bottom} 50%`;
+  if (p <= 75) return `${bottom} 35%`;
+  if (p <= 85) return `${bottom} 25%`;
+  if (p <= 90) return `${bottom} 15%`;
+  if (p <= 95) return `${bottom} 10%`;
+  return `${bottom} 5%`;
 }
-
-export type CardLocale = 'en' | 'de';
 
 export function getPercentileLabel(percentile: number): string {
   return getPercentileLabelLocalized(percentile, 'en');

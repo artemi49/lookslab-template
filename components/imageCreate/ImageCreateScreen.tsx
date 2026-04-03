@@ -46,35 +46,51 @@ const EXPORT_IMAGE_PLACEHOLDER =
 const TIKTOK_EXPORT_WIDTH = 1440;
 const TIKTOK_EXPORT_HEIGHT = 2560;
 
+/** Canonical CSS width the card is always rendered at during export, regardless of viewport. */
+const CANONICAL_CARD_WIDTH = 420;
+const CANONICAL_CARD_HEIGHT = Math.round(CANONICAL_CARD_WIDTH * 16 / 9);
+
 /** Safe `url("...")` for CSS (blob/data URLs). html2canvas rasterizes `background-size: cover` more faithfully than `<img object-fit>`. */
 function cssBackgroundUrl(href: string): string {
   return `url(${JSON.stringify(href)})`;
 }
 
-const defaultMetrics: MetricRow[] = [
+const defaultMetricsEn: MetricRow[] = [
   { label: "Harmony", value: "7.5", percent: 75, tone: "blue" },
   { label: "Structure", value: "Good", percent: 72, tone: "green" },
   { label: "Eyes", value: "6.8", percent: 68, tone: "blue" },
   { label: "Midface", value: "6.2", percent: 62, tone: "amber" },
   { label: "Lower third", value: "7.1", percent: 71, tone: "green" },
 ];
-
-const METRIC_PRESETS: Array<
-  MetricRow & {
-    key: string;
-  }
-> = [
-  { key: "harmony", label: "Harmony", value: "7.5", percent: 75, tone: "blue" },
-  { key: "structure", label: "Structure", value: "Good", percent: 72, tone: "green" },
-  { key: "eyes", label: "Eyes", value: "6.8", percent: 68, tone: "blue" },
-  { key: "midface", label: "Midface", value: "6.2", percent: 62, tone: "amber" },
-  { key: "lower-third", label: "Lower third", value: "7.1", percent: 71, tone: "green" },
-  { key: "upper-third", label: "Upper third", value: "6.5", percent: 65, tone: "amber" },
-  { key: "nose", label: "Nose", value: "6.7", percent: 67, tone: "blue" },
-  { key: "jawline", label: "Jawline", value: "6.9", percent: 69, tone: "green" },
-  { key: "lips", label: "Lips", value: "6.4", percent: 64, tone: "amber" },
-  { key: "symmetry", label: "Symmetry", value: "7.0", percent: 70, tone: "green" },
+const defaultMetricsDe: MetricRow[] = [
+  { label: "Harmonie", value: "7,5", percent: 75, tone: "blue" },
+  { label: "Struktur", value: "Gut", percent: 72, tone: "green" },
+  { label: "Augen", value: "6,8", percent: 68, tone: "blue" },
+  { label: "Mittelgesicht", value: "6,2", percent: 62, tone: "amber" },
+  { label: "Unteres Drittel", value: "7,1", percent: 71, tone: "green" },
 ];
+
+type PresetRow = MetricRow & { key: string; labelDe: string; valueDe: string };
+
+const METRIC_PRESETS: PresetRow[] = [
+  { key: "harmony", label: "Harmony", labelDe: "Harmonie", value: "7.5", valueDe: "7,5", percent: 75, tone: "blue" },
+  { key: "structure", label: "Structure", labelDe: "Struktur", value: "Good", valueDe: "Gut", percent: 72, tone: "green" },
+  { key: "eyes", label: "Eyes", labelDe: "Augen", value: "6.8", valueDe: "6,8", percent: 68, tone: "blue" },
+  { key: "midface", label: "Midface", labelDe: "Mittelgesicht", value: "6.2", valueDe: "6,2", percent: 62, tone: "amber" },
+  { key: "lower-third", label: "Lower third", labelDe: "Unteres Drittel", value: "7.1", valueDe: "7,1", percent: 71, tone: "green" },
+  { key: "upper-third", label: "Upper third", labelDe: "Oberes Drittel", value: "6.5", valueDe: "6,5", percent: 65, tone: "amber" },
+  { key: "nose", label: "Nose", labelDe: "Nase", value: "6.7", valueDe: "6,7", percent: 67, tone: "blue" },
+  { key: "jawline", label: "Jawline", labelDe: "Kieferlinie", value: "6.9", valueDe: "6,9", percent: 69, tone: "green" },
+  { key: "lips", label: "Lips", labelDe: "Lippen", value: "6.4", valueDe: "6,4", percent: 64, tone: "amber" },
+  { key: "symmetry", label: "Symmetry", labelDe: "Symmetrie", value: "7.0", valueDe: "7,0", percent: 70, tone: "green" },
+];
+
+function presetLabel(p: PresetRow, locale: CardLocale): string {
+  return locale === "de" ? p.labelDe : p.label;
+}
+function presetValue(p: PresetRow, locale: CardLocale): string {
+  return locale === "de" ? p.valueDe : p.value;
+}
 
 function toneFromPercent(percent: number): NonNullable<MetricRow["tone"]> {
   if (percent >= 70) return "green";
@@ -112,6 +128,9 @@ async function normalizeToTikTokSize(blob: Blob): Promise<Blob | null> {
     const ctx = canvas.getContext("2d");
     if (!ctx) return blob;
 
+    ctx.fillStyle = SHARE_CARD_EXPORT_BG;
+    ctx.fillRect(0, 0, TIKTOK_EXPORT_WIDTH, TIKTOK_EXPORT_HEIGHT);
+
     const targetRatio = TIKTOK_EXPORT_WIDTH / TIKTOK_EXPORT_HEIGHT;
     const srcRatio = img.width / img.height;
     let drawW = TIKTOK_EXPORT_WIDTH;
@@ -147,28 +166,34 @@ async function normalizeToTikTokSize(blob: Blob): Promise<Blob | null> {
  * (especially with `scrollHeight`) stretches type relative to the preview.
  */
 async function cardToPngBlobHtml2Canvas(el: HTMLElement, targetWidth: number): Promise<Blob | null> {
-  const rect = el.getBoundingClientRect();
-  const cssW = Math.max(1, rect.width);
-  const cssH = Math.max(1, rect.height);
+  const cssW = CANONICAL_CARD_WIDTH;
+  const cssH = CANONICAL_CARD_HEIGHT;
   const scale = targetWidth / cssW;
 
   const canvas = await html2canvas(el, {
     scale,
     width: cssW,
     height: cssH,
-    windowWidth: cssW,
-    windowHeight: cssH,
+    windowWidth: 1024,
+    windowHeight: Math.round(1024 * 16 / 9),
     useCORS: true,
     allowTaint: false,
     logging: false,
-    backgroundColor: null,
+    backgroundColor: SHARE_CARD_EXPORT_BG,
     foreignObjectRendering: false,
     onclone(clonedDoc, clonedEl) {
+      clonedEl.style.position = "absolute";
+      clonedEl.style.left = "0";
+      clonedEl.style.top = "0";
       clonedEl.style.width = `${cssW}px`;
+      clonedEl.style.minWidth = `${cssW}px`;
+      clonedEl.style.maxWidth = `${cssW}px`;
       clonedEl.style.height = `${cssH}px`;
-      clonedEl.style.maxWidth = "none";
+      clonedEl.style.minHeight = `${cssH}px`;
+      clonedEl.style.maxHeight = `${cssH}px`;
       clonedEl.style.aspectRatio = "auto";
       clonedEl.style.margin = "0";
+      clonedEl.style.overflow = "hidden";
 
       const win = clonedDoc.defaultView;
       if (!win) return;
@@ -209,7 +234,7 @@ export default function ImageCreateScreen() {
   const [combinedScore, setCombinedScore] = useState(8.05);
   const [autoCombined, setAutoCombined] = useState(true);
 
-  const cardLang: CardLocale = "en";
+  const [cardLang, setCardLang] = useState<CardLocale>("en");
   const [percentileLabel, setPercentileLabel] = useState(() =>
     getPercentileLabelLocalized(calculatePercentile(8.05), "en")
   );
@@ -225,10 +250,10 @@ export default function ImageCreateScreen() {
     const top = Math.max(1, Math.min(99, populationTopPercent));
     if (top <= 50) {
       const n = Math.max(2, Math.round(100 / top));
-      return `1 in ${n}`;
+      return cardLang === "de" ? `1 von ${n}` : `1 in ${n}`;
     }
     return "";
-  }, [populationTopPercent]);
+  }, [populationTopPercent, cardLang]);
 
   const populationSliderUiValue = 100 - populationTopPercent;
 
@@ -238,7 +263,7 @@ export default function ImageCreateScreen() {
 
   const [title, setTitle] = useState("Your profile");
   const [subtitle, setSubtitle] = useState("Harmony map");
-  const [metricRows, setMetricRows] = useState<MetricRow[]>(defaultMetrics);
+  const [metricRows, setMetricRows] = useState<MetricRow[]>(defaultMetricsEn);
   const [selectedRatios, setSelectedRatios] = useState<string[]>([
     "Eye spacing",
     "Canthal tilt",
@@ -264,6 +289,35 @@ export default function ImageCreateScreen() {
     const p = calculatePercentile(combinedScore);
     setPercentileLabel(getPercentileLabelLocalized(p, cardLang));
   }, [combinedScore, cardLang]);
+
+  useEffect(() => {
+    const titlePairs = [["Your profile", "Dein Profil"], ["Harmony map", "Harmonie-Karte"]] as const;
+    setTitle((prev) => {
+      const pair = titlePairs[0];
+      if (cardLang === "de" && prev === pair[0]) return pair[1];
+      if (cardLang === "en" && prev === pair[1]) return pair[0];
+      return prev;
+    });
+    setSubtitle((prev) => {
+      const pair = titlePairs[1];
+      if (cardLang === "de" && prev === pair[0]) return pair[1];
+      if (cardLang === "en" && prev === pair[1]) return pair[0];
+      return prev;
+    });
+    setMetricRows((prev) =>
+      prev.map((row) => {
+        const preset = METRIC_PRESETS.find(
+          (p) => p.label === row.label || p.labelDe === row.label
+        );
+        if (!preset) return row;
+        return {
+          ...row,
+          label: presetLabel(preset, cardLang),
+          value: presetValue(preset, cardLang),
+        };
+      })
+    );
+  }, [cardLang]);
 
   const onFile = (
     file: File | null,
@@ -326,53 +380,61 @@ export default function ImageCreateScreen() {
     if (!el) return;
     if (scrollEl) scrollEl.scrollTop = 0;
 
-    const prevOverflow = scrollEl?.style.overflow;
-    const prevMaxH = scrollEl?.style.maxHeight;
+    await preloadShareCardFonts();
+
+    // Snapshot every inline style we touch so we can restore after capture.
+    const saved = {
+      scrollOverflow: scrollEl?.style.overflow ?? "",
+      scrollMaxH: scrollEl?.style.maxHeight ?? "",
+      position: el.style.position,
+      left: el.style.left,
+      top: el.style.top,
+      zIndex: el.style.zIndex,
+      pointerEvents: el.style.pointerEvents,
+      width: el.style.width,
+      minWidth: el.style.minWidth,
+      maxWidth: el.style.maxWidth,
+      height: el.style.height,
+      minHeight: el.style.minHeight,
+      maxHeight: el.style.maxHeight,
+      margin: el.style.margin,
+      aspectRatio: el.style.aspectRatio,
+    };
+
+    // Move card offscreen in a fixed-position layer so no parent can clip or
+    // constrain it, and force the exact canonical 9:16 box (420 × 747).
     if (scrollEl) {
       scrollEl.style.overflow = "visible";
       scrollEl.style.maxHeight = "none";
     }
-
-    await preloadShareCardFonts();
-    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-    await new Promise<void>((r) => setTimeout(r, 50));
-
-    // `mx-auto` resolves to large L/R margins in a wide column; the clone is rasterized
-    // inside a foreignObject only as wide as the card — keep those margins at 0 on the
-    // live node so the clone’s computed styles match export (avoids left gap / clip).
-    const prevCardMarginLeft = el.style.marginLeft;
-    const prevCardMarginRight = el.style.marginRight;
-    el.style.marginLeft = "0";
-    el.style.marginRight = "0";
+    el.style.position = "absolute";
+    el.style.left = "-9999px";
+    el.style.top = "0";
+    el.style.zIndex = "-1";
+    el.style.pointerEvents = "none";
+    el.style.width = `${CANONICAL_CARD_WIDTH}px`;
+    el.style.minWidth = `${CANONICAL_CARD_WIDTH}px`;
+    el.style.maxWidth = `${CANONICAL_CARD_WIDTH}px`;
+    el.style.height = `${CANONICAL_CARD_HEIGHT}px`;
+    el.style.minHeight = `${CANONICAL_CARD_HEIGHT}px`;
+    el.style.maxHeight = `${CANONICAL_CARD_HEIGHT}px`;
+    el.style.margin = "0";
+    el.style.aspectRatio = "auto";
     void el.offsetWidth;
 
-    // Match the visible painted box (same aspect ratio as preview). `scrollHeight` ≫ `offsetHeight` breaks
-    // html-to-image / forced html2canvas rects and stretches typography.
-    const br = el.getBoundingClientRect();
-    const w = Math.max(2, Math.round(br.width));
-    let h = Math.max(2, Math.round(br.height));
-    h = Math.min(h, 8192);
-    if (w < 2 || h < 2) {
-      el.style.marginLeft = prevCardMarginLeft;
-      el.style.marginRight = prevCardMarginRight;
-      if (scrollEl) {
-        scrollEl.style.overflow = prevOverflow ?? "";
-        scrollEl.style.maxHeight = prevMaxH ?? "";
-      }
-      return;
-    }
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    await new Promise<void>((r) => setTimeout(r, 150));
+
+    const w = CANONICAL_CARD_WIDTH;
+    const h = CANONICAL_CARD_HEIGHT;
     const targetW = TIKTOK_EXPORT_WIDTH;
     const pixelRatio = targetW / w;
 
-    // IMPORTANT: `cacheBust: true` appends `?timestamp` to every URL. That breaks `blob:` preview URLs
-    // from createObjectURL — fetch fails and the whole capture aborts. Never bust cache for export.
     const commonOpts = {
       cacheBust: false as const,
       imagePlaceholder: EXPORT_IMAGE_PLACEHOLDER,
     };
 
-    // Never use skipFonts: false here — it scans all stylesheets for @font-face and hits opaque CSSOM (SecurityError)
-    // under Next/Turbopack and many dev setups. Fonts are already loaded via preloadShareCardFonts + computed styles.
     const exportAttempts: Array<{ pixelRatio: number; useMeasuredSize?: boolean }> = [
       { pixelRatio },
       { pixelRatio: Math.min(pixelRatio, 2) },
@@ -419,11 +481,22 @@ export default function ImageCreateScreen() {
     } catch (e) {
       console.error("PNG export failed:", e);
     } finally {
-      el.style.marginLeft = prevCardMarginLeft;
-      el.style.marginRight = prevCardMarginRight;
+      el.style.position = saved.position;
+      el.style.left = saved.left;
+      el.style.top = saved.top;
+      el.style.zIndex = saved.zIndex;
+      el.style.pointerEvents = saved.pointerEvents;
+      el.style.width = saved.width;
+      el.style.minWidth = saved.minWidth;
+      el.style.maxWidth = saved.maxWidth;
+      el.style.height = saved.height;
+      el.style.minHeight = saved.minHeight;
+      el.style.maxHeight = saved.maxHeight;
+      el.style.margin = saved.margin;
+      el.style.aspectRatio = saved.aspectRatio;
       if (scrollEl) {
-        scrollEl.style.overflow = prevOverflow ?? "";
-        scrollEl.style.maxHeight = prevMaxH ?? "";
+        scrollEl.style.overflow = saved.scrollOverflow;
+        scrollEl.style.maxHeight = saved.scrollMaxH;
       }
     }
   };
@@ -446,8 +519,8 @@ export default function ImageCreateScreen() {
     const preset = METRIC_PRESETS.find((p) => p.key === presetKey);
     if (!preset) return;
     updateMetric(i, {
-      label: preset.label,
-      value: preset.value,
+      label: presetLabel(preset, cardLang),
+      value: presetValue(preset, cardLang),
       percent: preset.percent,
       tone: preset.tone,
     });
@@ -492,6 +565,24 @@ export default function ImageCreateScreen() {
                 )}
               >
                 {m === "harmony" ? "Harmony card" : "Metrics grid"}
+              </button>
+            ))}
+          </div>
+          <span className="w-px h-5 bg-slate-300/60" aria-hidden />
+          <div className="flex gap-1">
+            {(["en", "de"] as const).map((l) => (
+              <button
+                key={l}
+                type="button"
+                onClick={() => setCardLang(l)}
+                className={cn(
+                  "px-3 py-2 rounded-xl text-xs font-bold uppercase border transition-all cursor-pointer tracking-wide",
+                  cardLang === l
+                    ? "bg-[#BFDEFE]/80 border-[#8CB3F2] text-slate-900 shadow-[0_6px_18px_rgba(140,179,242,0.35)]"
+                    : "bg-white/70 border-black/10 text-slate-500 hover:bg-white"
+                )}
+              >
+                {l === "en" ? "EN" : "DE"}
               </button>
             ))}
           </div>
@@ -724,7 +815,7 @@ export default function ImageCreateScreen() {
                         <select
                           className="w-full h-9 rounded-lg border border-black/10 px-2 text-sm"
                           value={
-                            METRIC_PRESETS.find((p) => p.label === row.label && p.value === row.value)?.key ??
+                            METRIC_PRESETS.find((p) => p.label === row.label || p.labelDe === row.label)?.key ??
                             METRIC_PRESETS[0].key
                           }
                           onChange={(e) => applyMetricPreset(i, e.target.value)}
@@ -736,11 +827,11 @@ export default function ImageCreateScreen() {
                               disabled={metricRows.slice(0, 5).some((r, ri) => {
                                 if (ri === i) return false;
                                 const selectedKey =
-                                  METRIC_PRESETS.find((p) => p.label === r.label && p.value === r.value)?.key ?? null;
+                                  METRIC_PRESETS.find((p) => p.label === r.label || p.labelDe === r.label)?.key ?? null;
                                 return selectedKey === preset.key;
                               })}
                             >
-                              {preset.label}
+                              {presetLabel(preset, cardLang)}
                             </option>
                           ))}
                         </select>
@@ -929,7 +1020,7 @@ const ShareCardPreviewChrome = forwardRef<
         />
         <div className="relative z-[1]">
           <h2
-            className="text-[2.65rem] sm:text-[2.85rem] leading-[1.02] font-normal text-slate-900 tracking-tight"
+            className="text-[2.85rem] leading-[1.02] font-normal text-slate-900 tracking-tight"
             style={{ fontFamily: "var(--font-serif)" }}
           >
             LooksLab
@@ -948,15 +1039,15 @@ const ShareCardPreviewChrome = forwardRef<
           </p>
         </div>
       </header>
-      <div className="px-3 sm:px-4 pb-3 pt-1 flex-1 min-h-0 flex flex-col">{children}</div>
+      <div className="px-4 pb-3 pt-1 flex-1 min-h-0 flex flex-col">{children}</div>
       <footer className="shrink-0 border-t border-slate-200/80 bg-gradient-to-b from-white/95 to-slate-50/90 py-4 px-5 flex items-center justify-center">
-        <div className="flex items-center gap-3 sm:gap-4 text-[#4f678f]">
+        <div className="flex items-center gap-4 text-[#4f678f]">
           <div className="flex items-center gap-2.5">
             <span className="inline-flex items-center justify-center text-[#4A7FD4]">
               <img src="/app-store.png" alt="App Store" className="w-8 h-8 rounded-[8px] object-cover" />
             </span>
             <span
-              className="text-sm sm:text-base font-semibold tracking-tight"
+              className="text-[15px] font-semibold tracking-tight"
               style={{ fontFamily: "var(--font-sans)" }}
             >
               LooksLab
@@ -968,7 +1059,7 @@ const ShareCardPreviewChrome = forwardRef<
               <img src="/safari.png" alt="Safari" className="w-8 h-8 rounded-[8px] object-cover" />
             </span>
             <span
-              className="text-sm sm:text-base font-semibold tracking-tight"
+              className="text-[15px] font-semibold tracking-tight"
               style={{ fontFamily: "var(--font-sans)" }}
             >
               LooksLab.de
@@ -1065,7 +1156,7 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
   return (
     <ShareCardPreviewChrome ref={ref} locale={locale}>
       <div
-        className="w-full max-w-full mb-1 rounded-[24px] p-4 sm:p-5 flex flex-col items-center overflow-hidden border border-slate-200/70 bg-white/82 shadow-[0_6px_18px_rgba(15,23,42,0.05)]"
+        className="w-full max-w-full mb-1 rounded-[24px] p-5 flex flex-col items-center overflow-hidden border border-slate-200/70 bg-white/82 shadow-[0_6px_18px_rgba(15,23,42,0.05)]"
         style={{ borderRadius: "28px" }}
       >
       <div className={cn("flex justify-center gap-7 w-full shrink-0", !hasSide && "justify-center")}>
@@ -1114,7 +1205,7 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
         <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400 mb-1.5">
           {locale === "de" ? "Harmonie-Score" : "Harmony score"}
         </div>
-        <div className="text-[3rem] sm:text-[3.8rem] font-black text-slate-900 tabular-nums leading-none tracking-tight">
+        <div className="text-[3.8rem] font-black text-slate-900 tabular-nums leading-none tracking-tight">
           {combinedDisplay}
         </div>
         <div className="text-slate-500 text-[14px] font-semibold mt-1 opacity-90">
@@ -1137,7 +1228,7 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
             <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-400 mb-1">
               {locale === "de" ? "Rang" : "Rank"}
             </div>
-            <div className="text-[13px] font-semibold text-slate-800 tabular-nums leading-tight">{getTopBottomLabel(populationTopPercent)}</div>
+            <div className="text-[13px] font-semibold text-slate-800 tabular-nums leading-tight">{getTopBottomLabel(populationTopPercent, locale)}</div>
           </div>
           {rarityLine && (
             <div className="px-2 py-3 min-h-[52px] flex flex-col justify-center">
