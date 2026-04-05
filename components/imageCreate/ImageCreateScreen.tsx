@@ -1365,10 +1365,8 @@ const ShareCardPreviewChrome = forwardRef<
       <footer className="shrink-0 border-t border-slate-200/80 bg-gradient-to-b from-white/95 to-slate-50/90 py-3.5 sm:py-4 px-3 sm:px-5 flex items-center justify-center">
         <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2.5 text-[#4f678f]">
           <div className="flex items-center gap-2.5">
-            <span className="inline-flex items-center justify-center w-8 h-8 rounded-[8px] bg-gradient-to-b from-[#2196F3] to-[#1565C0] text-white shadow-sm">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" fill="currentColor"/>
-              </svg>
+            <span className="inline-flex items-center justify-center text-[#4A7FD4]">
+              <img src="/app-store.png" alt="App Store" className="w-8 h-8 rounded-[8px] object-cover" />
             </span>
             <span
               className="text-[15px] font-semibold tracking-tight"
@@ -1379,12 +1377,8 @@ const ShareCardPreviewChrome = forwardRef<
           </div>
           <span className="w-px h-4 bg-slate-300/80" aria-hidden />
           <div className="flex items-center gap-2.5">
-            <span className="inline-flex items-center justify-center w-8 h-8 rounded-[8px] bg-gradient-to-b from-[#42A5F5] to-[#1E88E5] text-white shadow-sm">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" fill="none"/>
-                <path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4" stroke="currentColor" strokeWidth="1" opacity="0.5"/>
-                <circle cx="12" cy="12" r="3.5" fill="currentColor" opacity="0.9"/>
-              </svg>
+            <span className="inline-flex items-center justify-center text-[#4A7FD4]">
+              <img src="/safari.png" alt="Safari" className="w-8 h-8 rounded-[8px] object-cover" />
             </span>
             <span
               className="text-[15px] font-semibold tracking-tight"
