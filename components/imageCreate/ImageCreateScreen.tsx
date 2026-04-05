@@ -57,9 +57,76 @@ const TIKTOK_EXPORT_HEIGHT = 2560;
 const EXPORT_CARD_CSS_WIDTH = 420;
 const EXPORT_CARD_CSS_HEIGHT = Math.round((EXPORT_CARD_CSS_WIDTH * 16) / 9);
 
-/** Safe `url("...")` for CSS (blob/data URLs). html2canvas rasterizes `background-size: cover` more faithfully than `<img object-fit>`. */
-function cssBackgroundUrl(href: string): string {
-  return `url(${JSON.stringify(href)})`;
+function isLikelyMobileExportHost(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return /iPhone|iPad|iPod|Android.*Mobile/i.test(ua);
+}
+
+/** Wait for every `<img>` under `root` so html2canvas / dom-to-image see decoded pixels (critical on iOS). */
+async function warmDomImages(root: HTMLElement): Promise<void> {
+  const imgs = Array.from(root.querySelectorAll("img"));
+  await Promise.all(
+    imgs.map((img) => {
+      return new Promise<void>((resolve) => {
+        const finish = () => {
+          const p = typeof img.decode === "function" ? img.decode() : Promise.resolve();
+          void p.catch(() => undefined).finally(() => resolve());
+        };
+        if (img.complete) finish();
+        else {
+          img.addEventListener("load", finish, { once: true });
+          img.addEventListener("error", finish, { once: true });
+        }
+      });
+    })
+  );
+}
+
+/** Rounded user photo: real `<img>` — html2canvas on iOS often skips CSS `background-image` on cloned nodes. */
+function HarmonyFacePhoto({ src }: { src: string | null }) {
+  return (
+    <div
+      className="relative w-[92px] h-[92px] rounded-full border-[2px] border-white ring-1 ring-[#8CB3F2]/45 overflow-hidden bg-gradient-to-b from-[#e8f2ff] to-[#d4e5fc] shrink-0 shadow-[0_5px_14px_rgba(91,143,217,0.15)]"
+      role={src ? "img" : undefined}
+      aria-hidden={src ? undefined : true}
+    >
+      {src ? (
+        <img
+          src={src}
+          alt=""
+          width={92}
+          height={92}
+          className="absolute inset-0 h-full w-full object-cover object-center pointer-events-none select-none"
+          style={{ display: "block", WebkitTransform: "translateZ(0)" }}
+          draggable={false}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function MetricsPortraitPhoto({ src }: { src: string | null }) {
+  return (
+    <div
+      className="relative w-[76px] h-[76px] rounded-full border-[3px] border-[#8CB3F2] overflow-hidden mt-2.5 bg-[#BFDEFE]/50"
+      style={{ boxShadow: "0 8px 22px rgba(140,179,242,0.3)" }}
+      role={src ? "img" : undefined}
+      aria-hidden={src ? undefined : true}
+    >
+      {src ? (
+        <img
+          src={src}
+          alt=""
+          width={76}
+          height={76}
+          className="absolute inset-0 h-full w-full object-cover object-center pointer-events-none select-none"
+          style={{ display: "block", WebkitTransform: "translateZ(0)" }}
+          draggable={false}
+        />
+      ) : null}
+    </div>
+  );
 }
 
 const defaultMetricsEn: MetricRow[] = [
@@ -188,11 +255,24 @@ async function normalizeToTikTokSize(blob: Blob): Promise<Blob | null> {
  * Measure the live node after `exportPng` snaps it to `EXPORT_CARD_CSS_*`, set `windowWidth`/`windowHeight`
  * to that exact box, and keep `onclone` minimal — mismatched iframe viewport size produces blank PNGs.
  */
-async function cardToPngBlobHtml2Canvas(el: HTMLElement, targetWidth: number): Promise<Blob | null> {
+type Html2CanvasExportExtra = {
+  /** Cap scale to avoid blank / OOM canvases on some mobile GPUs. */
+  maxScale?: number;
+  foreignObjectRendering?: boolean;
+};
+
+async function cardToPngBlobHtml2Canvas(
+  el: HTMLElement,
+  targetWidth: number,
+  extra?: Html2CanvasExportExtra
+): Promise<Blob | null> {
   const rect = el.getBoundingClientRect();
   const cssW = Math.max(1, rect.width);
   const cssH = Math.max(1, rect.height);
-  const scale = targetWidth / cssW;
+  let scale = targetWidth / cssW;
+  if (extra?.maxScale != null) {
+    scale = Math.min(scale, extra.maxScale);
+  }
 
   const canvas = await html2canvas(el, {
     scale,
@@ -204,7 +284,7 @@ async function cardToPngBlobHtml2Canvas(el: HTMLElement, targetWidth: number): P
     allowTaint: false,
     logging: false,
     backgroundColor: null,
-    foreignObjectRendering: false,
+    foreignObjectRendering: extra?.foreignObjectRendering ?? false,
     onclone(clonedDoc, clonedEl) {
       clonedEl.style.width = `${cssW}px`;
       clonedEl.style.height = `${cssH}px`;
@@ -457,6 +537,7 @@ export default function ImageCreateScreen() {
     el.style.aspectRatio = "auto";
 
     void el.offsetWidth;
+    el.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     await new Promise<void>((r) => setTimeout(r, 80));
 
@@ -496,30 +577,60 @@ export default function ImageCreateScreen() {
       { pixelRatio: 1, useMeasuredSize: true },
     ];
 
+    const mobile = isLikelyMobileExportHost();
+    await warmDomImages(el);
+
     try {
       let blob: Blob | null = null;
       let lastErr: unknown;
 
-      try {
-        blob = await cardToPngBlobHtml2Canvas(el, targetW);
-      } catch (h2cErr) {
-        lastErr = h2cErr;
-        console.warn("html2canvas export failed, trying html-to-image:", h2cErr);
-      }
-
-      if (!blob) {
+      const tryHtmlToImage = async () => {
         for (const attempt of exportAttempts) {
           try {
-            blob = await toBlob(el, {
+            const b = await toBlob(el, {
               ...commonOpts,
               skipFonts: true,
               pixelRatio: attempt.pixelRatio,
               ...(attempt.useMeasuredSize ? {} : { width: w, height: h }),
             });
-            if (blob) break;
+            if (b) return b;
           } catch (err) {
             lastErr = err;
           }
+        }
+        return null;
+      };
+
+      if (mobile) {
+        // iOS/WebKit: dom-to-image often keeps <img> pixels; html2canvas frequently drops user photos.
+        blob = await tryHtmlToImage();
+        if (!blob) {
+          try {
+            blob = await cardToPngBlobHtml2Canvas(el, targetW, { maxScale: 2 });
+          } catch (h2cErr) {
+            lastErr = h2cErr;
+            console.warn("html2canvas (mobile) failed:", h2cErr);
+          }
+        }
+        if (!blob) {
+          try {
+            blob = await cardToPngBlobHtml2Canvas(el, targetW, {
+              maxScale: 2,
+              foreignObjectRendering: true,
+            });
+          } catch (h2cErr) {
+            lastErr = h2cErr;
+          }
+        }
+      } else {
+        try {
+          blob = await cardToPngBlobHtml2Canvas(el, targetW);
+        } catch (h2cErr) {
+          lastErr = h2cErr;
+          console.warn("html2canvas export failed, trying html-to-image:", h2cErr);
+        }
+        if (!blob) {
+          blob = await tryHtmlToImage();
         }
       }
 
@@ -1280,21 +1391,7 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
       >
       <div className={cn("flex justify-center gap-7 w-full shrink-0", !hasSide && "justify-center")}>
         <div className="flex flex-col items-center">
-          <div
-            className="w-[92px] h-[92px] rounded-full border-[2px] border-white ring-1 ring-[#8CB3F2]/45 overflow-hidden bg-gradient-to-b from-[#e8f2ff] to-[#d4e5fc] shrink-0 shadow-[0_5px_14px_rgba(91,143,217,0.15)]"
-            style={
-              frontPreview
-                ? {
-                    backgroundImage: cssBackgroundUrl(frontPreview),
-                    backgroundSize: "cover",
-                    backgroundPosition: "center center",
-                    backgroundRepeat: "no-repeat",
-                  }
-                : undefined
-            }
-            role={frontPreview ? "img" : undefined}
-            aria-hidden={frontPreview ? undefined : true}
-          />
+          <HarmonyFacePhoto src={frontPreview} />
           {hasSide && (
             <>
               <div className="text-[1.15rem] font-bold text-[#4A7FD4] mt-2 tabular-nums">{frontScore.toFixed(1)}</div>
@@ -1304,17 +1401,7 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
         </div>
         {hasSide && (
           <div className="flex flex-col items-center">
-            <div
-              className="w-[92px] h-[92px] rounded-full border-[2px] border-white ring-1 ring-[#8CB3F2]/45 overflow-hidden bg-gradient-to-b from-[#e8f2ff] to-[#d4e5fc] shrink-0 shadow-[0_5px_14px_rgba(91,143,217,0.15)]"
-              style={{
-                backgroundImage: cssBackgroundUrl(sidePreview!),
-                backgroundSize: "cover",
-                backgroundPosition: "center center",
-                backgroundRepeat: "no-repeat",
-              }}
-              role="img"
-              aria-hidden
-            />
+            <HarmonyFacePhoto src={sidePreview} />
             <div className="text-[1.15rem] font-bold text-[#4A7FD4] mt-2 tabular-nums">{sideScore.toFixed(1)}</div>
             <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-[0.14em]">{L.side}</div>
           </div>
@@ -1506,22 +1593,7 @@ const MetricsPreview = forwardRef<HTMLDivElement, MetricsPreviewProps>(function 
         style={{ borderRadius: "26px" }}
       >
       <div className="text-[10px] font-bold text-slate-400 tracking-[0.2em] uppercase">{overviewLabel}</div>
-      <div
-        className="w-[76px] h-[76px] rounded-full border-[3px] border-[#8CB3F2] overflow-hidden mt-2.5 bg-[#BFDEFE]/50"
-        style={{
-          boxShadow: "0 8px 22px rgba(140,179,242,0.3)",
-          ...(portraitPreview
-            ? {
-                backgroundImage: cssBackgroundUrl(portraitPreview),
-                backgroundSize: "cover",
-                backgroundPosition: "center center",
-                backgroundRepeat: "no-repeat",
-              }
-            : {}),
-        }}
-        role={portraitPreview ? "img" : undefined}
-        aria-hidden={portraitPreview ? undefined : true}
-      />
+      <MetricsPortraitPhoto src={portraitPreview} />
       <h2
         className="text-2xl font-normal text-slate-900 mt-2.5 text-center leading-tight"
         style={{ fontFamily: "var(--font-serif)" }}
