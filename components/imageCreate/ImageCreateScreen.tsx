@@ -64,8 +64,11 @@ const EXPORT_CARD_CSS_HEIGHT = Math.round((EXPORT_CARD_CSS_WIDTH * 16) / 9);
 
 function isLikelyMobileExportHost(): boolean {
   if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
+  if (nav.userAgentData?.mobile === true) return true;
   const ua = navigator.userAgent || "";
-  return /iPhone|iPad|iPod|Android.*Mobile/i.test(ua);
+  // Chrome Android, iOS browsers, WebView — avoid missing "Android.*Mobile" edge cases
+  return /Mobi|Android|iPhone|iPad|iPod|CriOS|FxiOS|Opera Mini|IEMobile/i.test(ua);
 }
 
 /**
@@ -301,6 +304,11 @@ type PhotoOverlay = {
   img: HTMLImageElement;
   /** Pixel copy before hiding the face `<img>` — WebKit can fail `drawImage` from a zero-opacity img. */
   snapshot: HTMLCanvasElement | null;
+  /**
+   * Same bytes as React preview (`data:image/...`) — compositing loads a fresh `Image` from this URL so
+   * Mobile Chrome never depends on DOM/canvas snapshot quirks.
+   */
+  statePixelUrl: string | null;
   xFrac: number;
   yFrac: number;
   wFrac: number;
@@ -326,25 +334,50 @@ function bakeFaceSnapshot(img: HTMLImageElement): HTMLCanvasElement | null {
   }
 }
 
-async function collectPhotoOverlaysFromDomAsync(cardEl: HTMLElement): Promise<PhotoOverlay[]> {
+async function collectPhotoOverlaysFromDomAsync(
+  cardEl: HTMLElement,
+  stateUrlsByPhotoId: Record<string, string | null>
+): Promise<PhotoOverlay[]> {
   const cardRect = cardEl.getBoundingClientRect();
   if (cardRect.width < 1 || cardRect.height < 1) return [];
   const overlays: PhotoOverlay[] = [];
   const containers = cardEl.querySelectorAll<HTMLElement>("[data-face-photo]");
   for (const container of containers) {
+    const photoId = container.getAttribute("data-face-photo") ?? "";
+    const statePixelUrl = photoId ? (stateUrlsByPhotoId[photoId] ?? null) : null;
+
     const img = container.querySelector<HTMLImageElement>("img");
-    if (!img || !img.src) continue;
+    if (!img || !img.src) {
+      if (statePixelUrl) {
+        const r = container.getBoundingClientRect();
+        const border = parseFloat(getComputedStyle(container).borderWidth) || 0;
+        overlays.push({
+          img: img ?? document.createElement("img"),
+          snapshot: null,
+          statePixelUrl,
+          xFrac: (r.left - cardRect.left) / cardRect.width,
+          yFrac: (r.top - cardRect.top) / cardRect.height,
+          wFrac: r.width / cardRect.width,
+          hFrac: r.height / cardRect.height,
+          borderFrac: border / r.width,
+        });
+      }
+      continue;
+    }
     try {
       await img.decode();
     } catch {
       /* ignore */
     }
-    if (!img.complete || img.naturalWidth === 0) continue;
+    const hasDims = img.complete && img.naturalWidth > 0;
+    if (!hasDims && !statePixelUrl) continue;
+
     const r = container.getBoundingClientRect();
     const border = parseFloat(getComputedStyle(container).borderWidth) || 0;
     overlays.push({
       img,
-      snapshot: bakeFaceSnapshot(img),
+      snapshot: hasDims ? bakeFaceSnapshot(img) : null,
+      statePixelUrl,
       xFrac: (r.left - cardRect.left) / cardRect.width,
       yFrac: (r.top - cardRect.top) / cardRect.height,
       wFrac: r.width / cardRect.width,
@@ -353,6 +386,38 @@ async function collectPhotoOverlaysFromDomAsync(cardEl: HTMLElement): Promise<Ph
     });
   }
   return overlays;
+}
+
+async function resolvePhotoOverlaySource(
+  o: PhotoOverlay
+): Promise<{ source: CanvasImageSource; srcW: number; srcH: number } | null> {
+  if (o.statePixelUrl) {
+    try {
+      const fresh = await loadImageFromUrl(o.statePixelUrl);
+      try {
+        await fresh.decode();
+      } catch {
+        /* ignore */
+      }
+      const sw = fresh.naturalWidth || fresh.width;
+      const sh = fresh.naturalHeight || fresh.height;
+      if (sw > 0 && sh > 0) return { source: fresh, srcW: sw, srcH: sh };
+    } catch {
+      /* fall through */
+    }
+  }
+  if (o.snapshot) {
+    return { source: o.snapshot, srcW: o.snapshot.width, srcH: o.snapshot.height };
+  }
+  try {
+    await o.img.decode();
+  } catch {
+    /* ignore */
+  }
+  const sw = o.img.naturalWidth || o.img.width;
+  const sh = o.img.naturalHeight || o.img.height;
+  if (sw < 1 || sh < 1) return null;
+  return { source: o.img, srcW: sw, srcH: sh };
 }
 
 async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Promise<Blob> {
@@ -369,10 +434,9 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
     ctx.drawImage(bg, 0, 0, canvas.width, canvas.height);
 
     for (const o of overlays) {
-      const source: CanvasImageSource = o.snapshot ?? o.img;
-      if (source instanceof HTMLImageElement) {
-        try { await source.decode(); } catch { /* already decoded or unsupported */ }
-      }
+      const resolved = await resolvePhotoOverlaySource(o);
+      if (!resolved) continue;
+      const { source, srcW, srcH } = resolved;
 
       const dx = o.xFrac * canvas.width;
       const dy = o.yFrac * canvas.height;
@@ -383,10 +447,6 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
       const borderPx = o.borderFrac * dw;
       const radius = Math.min(dw, dh) / 2 - borderPx;
 
-      const srcW =
-        o.snapshot != null ? o.snapshot.width : o.img.naturalWidth || o.img.width;
-      const srcH =
-        o.snapshot != null ? o.snapshot.height : o.img.naturalHeight || o.img.height;
       if (srcW === 0 || srcH === 0) continue;
       const destRatio = dw / dh;
       const srcRatio = srcW / srcH;
@@ -736,8 +796,14 @@ export default function ImageCreateScreen() {
     const mobile = isLikelyMobileExportHost();
     await warmAndInlineDomImages(el);
 
-    // After warm: decode each face img, bake canvas snapshots, then hide — WebKit can drop compositing from hidden imgs.
-    const photoOverlays = await collectPhotoOverlaysFromDomAsync(el);
+    const faceStateUrls: Record<string, string | null> = {
+      front: frontPreview,
+      side: sidePreview,
+      portrait: portraitPreview,
+    };
+
+    // After warm: geometry from DOM; pixels prefer React state URLs (Mobile Chrome) then snapshot, then `<img>`.
+    const photoOverlays = await collectPhotoOverlaysFromDomAsync(el, faceStateUrls);
 
     // Hide face `<img>`s during raster capture so we never double-draw (DOM + composite).
     // Gradients, borders, and rings stay in the PNG; photos are painted once in compositePhotosOnBlob.
@@ -791,9 +857,10 @@ export default function ImageCreateScreen() {
       };
 
       if (mobile) {
-        blob = await tryHtml2CanvasMobile();
+        // Android Chrome: html2canvas often mis-rasters complex cards; try SVG foreignObject path first.
+        blob = await tryHtmlToImage();
         if (!blob) {
-          blob = await tryHtmlToImage();
+          blob = await tryHtml2CanvasMobile();
         }
       } else {
         try {
