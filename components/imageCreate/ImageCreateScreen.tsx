@@ -188,16 +188,34 @@ function loadImageFromUrl(url: string): Promise<HTMLImageElement> {
   });
 }
 
-function readFileAsDataURL(file: File): Promise<string> {
+/** Max pixel dimension for user-uploaded photos; keeps data URLs small enough for mobile Safari. */
+const UPLOAD_MAX_DIM = 640;
+
+function resizeImageToDataURL(file: File, maxDim: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const r = reader.result;
-      if (typeof r === "string") resolve(r);
-      else reject(new Error("FileReader result was not a string"));
+    const blobUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(blobUrl);
+      let { width: w, height: h } = img;
+      if (w > maxDim || h > maxDim) {
+        const scale = maxDim / Math.max(w, h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { reject(new Error("Canvas context failed")); return; }
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL("image/jpeg", 0.88));
     };
-    reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
-    reader.readAsDataURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(blobUrl);
+      reject(new Error("Image load failed during resize"));
+    };
+    img.src = blobUrl;
   });
 }
 
@@ -265,18 +283,20 @@ type PhotoOverlay = {
   hFrac: number;
 };
 
-function collectPhotoOverlays(
-  cardEl: HTMLElement,
-  entries: Array<{ attr: string; img: HTMLImageElement | null }>
-): PhotoOverlay[] {
+/**
+ * Scan the live DOM card for `[data-face-photo]` containers that have a loaded
+ * `<img>` inside. Uses the actual rendered DOM elements — never relies on React refs
+ * which may be null on mobile due to large-image memory pressure.
+ */
+function collectPhotoOverlaysFromDom(cardEl: HTMLElement): PhotoOverlay[] {
   const cardRect = cardEl.getBoundingClientRect();
   if (cardRect.width < 1 || cardRect.height < 1) return [];
   const overlays: PhotoOverlay[] = [];
-  for (const { attr, img } of entries) {
-    if (!img) continue;
-    const el = cardEl.querySelector<HTMLElement>(`[data-face-photo="${attr}"]`);
-    if (!el) continue;
-    const r = el.getBoundingClientRect();
+  const containers = cardEl.querySelectorAll<HTMLElement>("[data-face-photo]");
+  for (const container of containers) {
+    const img = container.querySelector<HTMLImageElement>("img");
+    if (!img || !img.src || !img.complete || img.naturalWidth === 0) continue;
+    const r = container.getBoundingClientRect();
     overlays.push({
       img,
       xFrac: (r.left - cardRect.left) / cardRect.width,
@@ -302,6 +322,9 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
     ctx.drawImage(bg, 0, 0, canvas.width, canvas.height);
 
     for (const o of overlays) {
+      // Re-decode to ensure the image is still rasterised in GPU memory on iOS
+      try { await o.img.decode(); } catch { /* already decoded or unsupported */ }
+
       const dx = o.xFrac * canvas.width;
       const dy = o.yFrac * canvas.height;
       const dw = o.wFrac * canvas.width;
@@ -310,9 +333,9 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
       const cy = dy + dh / 2;
       const radius = Math.min(dw, dh) / 2;
 
-      // Cover-fit: crop source to match destination aspect ratio
       const srcW = o.img.naturalWidth || o.img.width;
       const srcH = o.img.naturalHeight || o.img.height;
+      if (srcW === 0 || srcH === 0) continue;
       const destRatio = dw / dh;
       const srcRatio = srcW / srcH;
       let sw: number, sh: number, sx: number, sy: number;
@@ -530,13 +553,15 @@ export default function ImageCreateScreen() {
       setPreview(null);
       return;
     }
-    // Data URLs embed in the DOM so html2canvas / WebKit still resolve them after clone (blob: often misses on iOS).
-    void readFileAsDataURL(file).then((url) => {
-      setPreview(url);
-      return loadImageFromUrl(url);
-    }).then((img) => {
-      ref.current = img;
-    }).catch(() => {});
+    void resizeImageToDataURL(file, UPLOAD_MAX_DIM)
+      .then((dataUrl) => {
+        setPreview(dataUrl);
+        return loadImageFromUrl(dataUrl);
+      })
+      .then((img) => {
+        ref.current = img;
+      })
+      .catch(() => {});
   };
 
   const clearFile = (
@@ -591,21 +616,7 @@ export default function ImageCreateScreen() {
     }
 
     await preloadShareCardFonts();
-
-    const warmPreviewImages = async () => {
-      const urls = [frontPreview, sidePreview, portraitPreview].filter(Boolean) as string[];
-      await Promise.all(
-        urls.map(async (u) => {
-          try {
-            const img = await loadImageFromUrl(u);
-            if (typeof img.decode === "function") await img.decode();
-          } catch {
-            /* ignore */
-          }
-        })
-      );
-    };
-    await warmPreviewImages();
+    await warmDomImages(el);
 
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     await new Promise<void>((r) => setTimeout(r, 50));
@@ -638,12 +649,8 @@ export default function ImageCreateScreen() {
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     await new Promise<void>((r) => setTimeout(r, 80));
 
-    // Collect photo positions while card is in export layout (before capture).
-    const photoOverlays = collectPhotoOverlays(el, [
-      { attr: "front", img: frontImgRef.current },
-      { attr: "side", img: sideImgRef.current },
-      { attr: "portrait", img: portraitImgRef.current },
-    ]);
+    // Collect photo positions from live DOM while card is in export layout.
+    const photoOverlays = collectPhotoOverlaysFromDom(el);
 
     const br = el.getBoundingClientRect();
     const w = Math.max(2, Math.round(br.width));
