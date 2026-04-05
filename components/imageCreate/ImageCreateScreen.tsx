@@ -63,22 +63,35 @@ function isLikelyMobileExportHost(): boolean {
   return /iPhone|iPad|iPod|Android.*Mobile/i.test(ua);
 }
 
-/** Wait for every `<img>` under `root` so html2canvas / dom-to-image see decoded pixels (critical on iOS). */
-async function warmDomImages(root: HTMLElement): Promise<void> {
+/**
+ * Wait for every `<img>` under `root` to load + decode, then convert any
+ * non-data-URL src to an inline data URL. On mobile Safari html-to-image
+ * fails to fetch relative `/foo.png` paths during export; inlining fixes that.
+ */
+async function warmAndInlineDomImages(root: HTMLElement): Promise<void> {
   const imgs = Array.from(root.querySelectorAll("img"));
   await Promise.all(
-    imgs.map((img) => {
-      return new Promise<void>((resolve) => {
-        const finish = () => {
-          const p = typeof img.decode === "function" ? img.decode() : Promise.resolve();
-          void p.catch(() => undefined).finally(() => resolve());
-        };
-        if (img.complete) finish();
-        else {
-          img.addEventListener("load", finish, { once: true });
-          img.addEventListener("error", finish, { once: true });
-        }
-      });
+    imgs.map(async (img) => {
+      if (!img.complete) {
+        await new Promise<void>((resolve) => {
+          img.addEventListener("load", () => resolve(), { once: true });
+          img.addEventListener("error", () => resolve(), { once: true });
+        });
+      }
+      // Convert relative / absolute (non-data) URLs to inline data URLs
+      if (img.src && !img.src.startsWith("data:") && img.naturalWidth > 0) {
+        try {
+          const c = document.createElement("canvas");
+          c.width = img.naturalWidth;
+          c.height = img.naturalHeight;
+          const ctx = c.getContext("2d");
+          if (ctx) {
+            ctx.drawImage(img, 0, 0);
+            img.src = c.toDataURL("image/png");
+          }
+        } catch { /* CORS taint — leave as-is */ }
+      }
+      try { await img.decode(); } catch { /* unsupported or already decoded */ }
     })
   );
 }
@@ -616,7 +629,7 @@ export default function ImageCreateScreen() {
     }
 
     await preloadShareCardFonts();
-    await warmDomImages(el);
+    await warmAndInlineDomImages(el);
 
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     await new Promise<void>((r) => setTimeout(r, 50));
@@ -689,7 +702,14 @@ export default function ImageCreateScreen() {
     ];
 
     const mobile = isLikelyMobileExportHost();
-    await warmDomImages(el);
+    await warmAndInlineDomImages(el);
+
+    // Hide user photos so the DOM capture only draws the card chrome.
+    // We composite the photos ourselves afterwards (avoids double-render shift on mobile).
+    const userPhotoImgs = Array.from(
+      el.querySelectorAll<HTMLImageElement>("[data-face-photo] img")
+    );
+    userPhotoImgs.forEach((img) => { img.style.visibility = "hidden"; });
 
     try {
       let blob: Blob | null = null;
@@ -713,7 +733,6 @@ export default function ImageCreateScreen() {
       };
 
       if (mobile) {
-        // iOS/WebKit: dom-to-image often keeps <img> pixels; html2canvas frequently drops user photos.
         blob = await tryHtmlToImage();
         if (!blob) {
           try {
@@ -745,12 +764,15 @@ export default function ImageCreateScreen() {
         }
       }
 
+      // Restore user photos before we read their positions / pixels for compositing.
+      userPhotoImgs.forEach((img) => { img.style.visibility = ""; });
+
       if (!blob) {
         console.error("PNG export failed after html2canvas + html-to-image:", lastErr);
         return;
       }
 
-      // Guarantee user photos are on the raster — draw directly via Canvas 2D.
+      // Draw user photos via Canvas 2D — always, since we hid them during capture.
       if (photoOverlays.length > 0) {
         blob = await compositePhotosOnBlob(blob, photoOverlays);
       }
@@ -763,6 +785,8 @@ export default function ImageCreateScreen() {
     } catch (e) {
       console.error("PNG export failed:", e);
     } finally {
+      // Ensure user photos are always visible again even if export threw.
+      userPhotoImgs.forEach((img) => { img.style.visibility = ""; });
       el.style.width = prevExportBox.width;
       el.style.minWidth = prevExportBox.minWidth;
       el.style.maxWidth = prevExportBox.maxWidth;
