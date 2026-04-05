@@ -111,7 +111,7 @@ async function warmAndInlineDomImages(root: HTMLElement): Promise<void> {
 function HarmonyFacePhoto({ src, photoId }: { src: string | null; photoId?: string }) {
   return (
     <div
-      className="relative w-[92px] h-[92px] rounded-full border-[2px] border-white ring-1 ring-[#8CB3F2]/45 overflow-hidden bg-gradient-to-b from-[#e8f2ff] to-[#d4e5fc] shrink-0 shadow-[0_5px_14px_rgba(91,143,217,0.15)]"
+      className="relative w-[92px] h-[92px] rounded-full border-[2px] border-white overflow-hidden bg-gradient-to-b from-[#e8f2ff] to-[#d4e5fc] shrink-0 shadow-[inset_0_0_0_1px_rgba(140,179,242,0.45),0_5px_14px_rgba(91,143,217,0.15)]"
       role={src ? "img" : undefined}
       aria-hidden={src ? undefined : true}
       data-face-photo={photoId}
