@@ -1104,50 +1104,6 @@ export default function ImageCreateScreen() {
                       readOnly
                     />
                   </label>
-                  <div className="space-y-2">
-                    <span className="text-xs font-medium text-slate-600">
-                      Typical ratios (max 5)
-                    </span>
-                    <div className="flex flex-col min-[480px]:flex-row gap-2">
-                      <select
-                        className="flex-1 min-h-10 rounded-xl border border-black/10 bg-white/90 px-3 text-sm"
-                        value={ratioPicker}
-                        onChange={(e) => setRatioPicker(e.target.value)}
-                      >
-                        {RATIO_LIBRARY.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        className="app-btn-secondary min-h-10 h-10 px-3 rounded-xl text-xs font-semibold shrink-0"
-                        onClick={() =>
-                          setSelectedRatios((prev) => {
-                            if (prev.includes(ratioPicker)) return prev;
-                            if (prev.length >= 5) return prev;
-                            return [...prev, ratioPicker];
-                          })
-                        }
-                      >
-                        Add
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedRatios.map((r) => (
-                        <button
-                          key={r}
-                          type="button"
-                          className="px-2 py-1 rounded-full border border-slate-200 bg-white text-[10px] text-slate-600"
-                          onClick={() => setSelectedRatios((prev) => prev.filter((x) => x !== r))}
-                          title="Remove"
-                        >
-                          {r} ×
-                        </button>
-                      ))}
-                    </div>
-                  </div>
                 </div>
               </>
             ) : (
