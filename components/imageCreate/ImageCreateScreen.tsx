@@ -111,7 +111,7 @@ async function warmAndInlineDomImages(root: HTMLElement): Promise<void> {
 function HarmonyFacePhoto({ src, photoId }: { src: string | null; photoId?: string }) {
   return (
     <div
-      className="relative w-[92px] h-[92px] rounded-full border-[2px] border-white overflow-hidden bg-gradient-to-b from-[#e8f2ff] to-[#d4e5fc] shrink-0 shadow-[inset_0_0_0_1px_rgba(140,179,242,0.45),0_5px_14px_rgba(91,143,217,0.15)]"
+      className="relative w-[92px] h-[92px] rounded-full border-[2px] border-white ring-1 ring-[#8CB3F2]/45 overflow-hidden bg-gradient-to-b from-[#e8f2ff] to-[#d4e5fc] shrink-0 shadow-[0_5px_14px_rgba(91,143,217,0.15)]"
       role={src ? "img" : undefined}
       aria-hidden={src ? undefined : true}
       data-face-photo={photoId}
@@ -337,6 +337,28 @@ async function normalizeToTikTokSize(blob: Blob, mobile: boolean): Promise<Blob 
   } finally {
     URL.revokeObjectURL(srcUrl);
   }
+}
+
+/**
+ * While the face `<img>` is hidden for capture, gradient + ring + box-shadow on the wrapper still rasterize.
+ * On mobile, html2canvas / html-to-image often draw those as smeared rectangular blue halos; composite only
+ * repaints the photo inside the circle, so we flatten the frame to white + no shadow for one clean pass.
+ */
+function neutralizeFacePhotoContainersForCapture(containers: HTMLElement[]): () => void {
+  for (const c of containers) {
+    c.style.setProperty("box-shadow", "none", "important");
+    c.style.setProperty("background-color", "#ffffff", "important");
+    c.style.setProperty("background-image", "none", "important");
+    c.style.setProperty("filter", "none", "important");
+  }
+  return () => {
+    for (const c of containers) {
+      c.style.removeProperty("box-shadow");
+      c.style.removeProperty("background-color");
+      c.style.removeProperty("background-image");
+      c.style.removeProperty("filter");
+    }
+  };
 }
 
 /* ── Canvas compositing: draw user photos directly onto the captured PNG ─────
@@ -848,7 +870,9 @@ export default function ImageCreateScreen() {
     const photoOverlays = await collectPhotoOverlaysFromDomAsync(el, faceStateUrls);
 
     // Hide face `<img>`s during raster capture so we never double-draw (DOM + composite).
-    // Gradients, borders, and rings stay in the PNG; photos are painted once in compositePhotosOnBlob.
+    // Wrapper gradient/ring/shadow are stripped for capture (mobile halo bug); white border stays from CSS.
+    const faceContainers = Array.from(el.querySelectorAll<HTMLElement>("[data-face-photo]"));
+    const restoreFaceContainers = neutralizeFacePhotoContainersForCapture(faceContainers);
     const faceImgs = Array.from(el.querySelectorAll<HTMLImageElement>("[data-face-photo] img"));
     faceImgs.forEach((img) => {
       img.style.opacity = "0";
@@ -932,6 +956,7 @@ export default function ImageCreateScreen() {
     } catch (e) {
       console.error("PNG export failed:", e);
     } finally {
+      restoreFaceContainers();
       faceImgs.forEach((img) => {
         img.style.opacity = "";
       });
