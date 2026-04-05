@@ -109,10 +109,26 @@ function toneFromPercent(percent: number): NonNullable<MetricRow["tone"]> {
 function loadImageFromUrl(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    // data: and blob: are same-origin; anonymous avoids taint when drawing to canvas on some engines
+    if (!url.startsWith("data:") && !url.startsWith("blob:")) {
+      img.crossOrigin = "anonymous";
+    }
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error("Image load failed"));
     img.src = url;
+  });
+}
+
+function readFileAsDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const r = reader.result;
+      if (typeof r === "string") resolve(r);
+      else reject(new Error("FileReader result was not a string"));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
+    reader.readAsDataURL(file);
   });
 }
 
@@ -337,9 +353,11 @@ export default function ImageCreateScreen() {
       setPreview(null);
       return;
     }
-    const url = URL.createObjectURL(file);
-    setPreview(url);
-    loadImageFromUrl(url).then((img) => {
+    // Data URLs embed in the DOM so html2canvas / WebKit still resolve them after clone (blob: often misses on iOS).
+    void readFileAsDataURL(file).then((url) => {
+      setPreview(url);
+      return loadImageFromUrl(url);
+    }).then((img) => {
       ref.current = img;
     }).catch(() => {});
   };
@@ -396,6 +414,22 @@ export default function ImageCreateScreen() {
     }
 
     await preloadShareCardFonts();
+
+    const warmPreviewImages = async () => {
+      const urls = [frontPreview, sidePreview, portraitPreview].filter(Boolean) as string[];
+      await Promise.all(
+        urls.map(async (u) => {
+          try {
+            const img = await loadImageFromUrl(u);
+            if (typeof img.decode === "function") await img.decode();
+          } catch {
+            /* ignore */
+          }
+        })
+      );
+    };
+    await warmPreviewImages();
+
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     await new Promise<void>((r) => setTimeout(r, 50));
 
