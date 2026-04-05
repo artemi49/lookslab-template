@@ -54,6 +54,9 @@ const ICON_SAFARI =
 
 const TIKTOK_EXPORT_WIDTH = 1440;
 const TIKTOK_EXPORT_HEIGHT = 2560;
+/** Same 9:16 as desktop; smaller canvas avoids blank PNG / OOM on many phones. */
+const TIKTOK_MOBILE_EXPORT_WIDTH = 1080;
+const TIKTOK_MOBILE_EXPORT_HEIGHT = 1920;
 
 /**
  * Every PNG is captured from this exact CSS pixel frame so typography/layout match on all devices.
@@ -240,30 +243,75 @@ function resizeImageToDataURL(file: File, maxDim: number): Promise<string> {
   });
 }
 
-function downloadPngBlob(blob: Blob, filename: string) {
+/** Some WebKit/Blink builds return null from `toBlob` on large canvases; data URL still works. */
+async function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  const direct = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob((b) => resolve(b), "image/png", 1);
+  });
+  if (direct) return direct;
+  try {
+    const dataUrl = canvas.toDataURL("image/png");
+    const res = await fetch(dataUrl);
+    return await res.blob();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mobile browsers often ignore synthetic `<a download>`; Web Share (save to Photos) works reliably.
+ */
+async function offerDownloadablePng(blob: Blob, filename: string): Promise<boolean> {
+  const nav = navigator as Navigator & {
+    share?: (data: ShareData & { files?: File[] }) => Promise<void>;
+    canShare?: (data: ShareData & { files?: File[] }) => boolean;
+  };
+
+  const file = new File([blob], filename, { type: "image/png", lastModified: Date.now() });
+
+  if (typeof nav.canShare === "function" && typeof nav.share === "function") {
+    try {
+      if (nav.canShare({ files: [file] })) {
+        await nav.share({ files: [file], title: filename });
+        return true;
+      }
+    } catch (e) {
+      const name = (e as { name?: string })?.name;
+      if (name === "AbortError") return true;
+    }
+  }
+
   const href = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = href;
   a.download = filename;
+  a.rel = "noopener";
+  a.style.cssText = "position:fixed;left:-9999px;top:0;height:1px;width:1px;opacity:0";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(href);
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(href), 120_000);
+  return true;
 }
 
-async function normalizeToTikTokSize(blob: Blob): Promise<Blob | null> {
+function tiktokExportDimensions(mobile: boolean): { tw: number; th: number } {
+  if (mobile) return { tw: TIKTOK_MOBILE_EXPORT_WIDTH, th: TIKTOK_MOBILE_EXPORT_HEIGHT };
+  return { tw: TIKTOK_EXPORT_WIDTH, th: TIKTOK_EXPORT_HEIGHT };
+}
+
+async function normalizeToTikTokSize(blob: Blob, mobile: boolean): Promise<Blob | null> {
   const srcUrl = URL.createObjectURL(blob);
   try {
     const img = await loadImageFromUrl(srcUrl);
     const canvas = document.createElement("canvas");
-    canvas.width = TIKTOK_EXPORT_WIDTH;
-    canvas.height = TIKTOK_EXPORT_HEIGHT;
+    const { tw, th } = tiktokExportDimensions(mobile);
+    canvas.width = tw;
+    canvas.height = th;
     const ctx = canvas.getContext("2d");
     if (!ctx) return blob;
 
     ctx.fillStyle = SHARE_CARD_EXPORT_BG;
-    ctx.fillRect(0, 0, TIKTOK_EXPORT_WIDTH, TIKTOK_EXPORT_HEIGHT);
-
-    const tw = TIKTOK_EXPORT_WIDTH;
-    const th = TIKTOK_EXPORT_HEIGHT;
+    ctx.fillRect(0, 0, tw, th);
     const srcRatio = img.width / img.height;
     const targetRatio = tw / th;
 
@@ -285,9 +333,7 @@ async function normalizeToTikTokSize(blob: Blob): Promise<Blob | null> {
     }
 
     ctx.drawImage(img, drawX, drawY, drawW, drawH);
-    return new Promise((resolve) => {
-      canvas.toBlob((b) => resolve(b), "image/png", 1);
-    });
+    return (await canvasToPngBlob(canvas)) ?? blob;
   } finally {
     URL.revokeObjectURL(srcUrl);
   }
@@ -472,9 +518,7 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
       ctx.restore();
     }
 
-    return await new Promise<Blob>((resolve) => {
-      canvas.toBlob((b) => resolve(b ?? blob), "image/png", 1);
-    });
+    return (await canvasToPngBlob(canvas)) ?? blob;
   } finally {
     URL.revokeObjectURL(srcUrl);
   }
@@ -544,9 +588,7 @@ async function cardToPngBlobHtml2Canvas(
       });
     },
   });
-  return new Promise((resolve) => {
-    canvas.toBlob((b) => resolve(b), "image/png", 1);
-  });
+  return canvasToPngBlob(canvas);
 }
 
 export default function ImageCreateScreen() {
@@ -778,7 +820,8 @@ export default function ImageCreateScreen() {
       return;
     }
 
-    const targetW = TIKTOK_EXPORT_WIDTH;
+    const mobile = isLikelyMobileExportHost();
+    const targetW = mobile ? TIKTOK_MOBILE_EXPORT_WIDTH : TIKTOK_EXPORT_WIDTH;
     const pixelRatio = targetW / w;
 
     const commonOpts = {
@@ -793,7 +836,6 @@ export default function ImageCreateScreen() {
       { pixelRatio: 1, useMeasuredSize: true },
     ];
 
-    const mobile = isLikelyMobileExportHost();
     await warmAndInlineDomImages(el);
 
     const faceStateUrls: Record<string, string | null> = {
@@ -883,11 +925,10 @@ export default function ImageCreateScreen() {
         blob = await compositePhotosOnBlob(blob, photoOverlays);
       }
 
-      const finalBlob = (await normalizeToTikTokSize(blob)) ?? blob;
-      downloadPngBlob(
-        finalBlob,
-        mode === "harmony" ? "lookslab-harmony-card.png" : "lookslab-metrics-card.png"
-      );
+      const finalBlob = (await normalizeToTikTokSize(blob, mobile)) ?? blob;
+      const filename =
+        mode === "harmony" ? "lookslab-harmony-card.png" : "lookslab-metrics-card.png";
+      await offerDownloadablePng(finalBlob, filename);
     } catch (e) {
       console.error("PNG export failed:", e);
     } finally {
