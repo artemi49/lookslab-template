@@ -83,13 +83,14 @@ async function warmDomImages(root: HTMLElement): Promise<void> {
   );
 }
 
-/** Rounded user photo: real `<img>` — html2canvas on iOS often skips CSS `background-image` on cloned nodes. */
-function HarmonyFacePhoto({ src }: { src: string | null }) {
+/** Rounded user photo: real `<img>` + `data-face-photo` for canvas compositing fallback. */
+function HarmonyFacePhoto({ src, photoId }: { src: string | null; photoId?: string }) {
   return (
     <div
       className="relative w-[92px] h-[92px] rounded-full border-[2px] border-white ring-1 ring-[#8CB3F2]/45 overflow-hidden bg-gradient-to-b from-[#e8f2ff] to-[#d4e5fc] shrink-0 shadow-[0_5px_14px_rgba(91,143,217,0.15)]"
       role={src ? "img" : undefined}
       aria-hidden={src ? undefined : true}
+      data-face-photo={photoId}
     >
       {src ? (
         <img
@@ -113,6 +114,7 @@ function MetricsPortraitPhoto({ src }: { src: string | null }) {
       style={{ boxShadow: "0 8px 22px rgba(140,179,242,0.3)" }}
       role={src ? "img" : undefined}
       aria-hidden={src ? undefined : true}
+      data-face-photo="portrait"
     >
       {src ? (
         <img
@@ -242,6 +244,101 @@ async function normalizeToTikTokSize(blob: Blob): Promise<Blob | null> {
     ctx.drawImage(img, drawX, drawY, drawW, drawH);
     return new Promise((resolve) => {
       canvas.toBlob((b) => resolve(b), "image/png", 1);
+    });
+  } finally {
+    URL.revokeObjectURL(srcUrl);
+  }
+}
+
+/* ── Canvas compositing: draw user photos directly onto the captured PNG ─────
+ * Both html2canvas and html-to-image frequently drop user photos on iOS/WebKit.
+ * After any capture, we locate the photo circles via `data-face-photo`, then
+ * draw each loaded HTMLImageElement onto the raster with circular clipping.
+ * This is a pure Canvas 2D operation — no DOM cloning involved.
+ */
+
+type PhotoOverlay = {
+  img: HTMLImageElement;
+  xFrac: number;
+  yFrac: number;
+  wFrac: number;
+  hFrac: number;
+};
+
+function collectPhotoOverlays(
+  cardEl: HTMLElement,
+  entries: Array<{ attr: string; img: HTMLImageElement | null }>
+): PhotoOverlay[] {
+  const cardRect = cardEl.getBoundingClientRect();
+  if (cardRect.width < 1 || cardRect.height < 1) return [];
+  const overlays: PhotoOverlay[] = [];
+  for (const { attr, img } of entries) {
+    if (!img) continue;
+    const el = cardEl.querySelector<HTMLElement>(`[data-face-photo="${attr}"]`);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    overlays.push({
+      img,
+      xFrac: (r.left - cardRect.left) / cardRect.width,
+      yFrac: (r.top - cardRect.top) / cardRect.height,
+      wFrac: r.width / cardRect.width,
+      hFrac: r.height / cardRect.height,
+    });
+  }
+  return overlays;
+}
+
+async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Promise<Blob> {
+  if (overlays.length === 0) return blob;
+  const srcUrl = URL.createObjectURL(blob);
+  try {
+    const bg = await loadImageFromUrl(srcUrl);
+    const canvas = document.createElement("canvas");
+    canvas.width = bg.naturalWidth || bg.width;
+    canvas.height = bg.naturalHeight || bg.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return blob;
+
+    ctx.drawImage(bg, 0, 0, canvas.width, canvas.height);
+
+    for (const o of overlays) {
+      const dx = o.xFrac * canvas.width;
+      const dy = o.yFrac * canvas.height;
+      const dw = o.wFrac * canvas.width;
+      const dh = o.hFrac * canvas.height;
+      const cx = dx + dw / 2;
+      const cy = dy + dh / 2;
+      const radius = Math.min(dw, dh) / 2;
+
+      // Cover-fit: crop source to match destination aspect ratio
+      const srcW = o.img.naturalWidth || o.img.width;
+      const srcH = o.img.naturalHeight || o.img.height;
+      const destRatio = dw / dh;
+      const srcRatio = srcW / srcH;
+      let sw: number, sh: number, sx: number, sy: number;
+      if (srcRatio > destRatio) {
+        sh = srcH;
+        sw = sh * destRatio;
+        sx = (srcW - sw) / 2;
+        sy = 0;
+      } else {
+        sw = srcW;
+        sh = sw / destRatio;
+        sx = 0;
+        sy = (srcH - sh) / 2;
+      }
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(o.img, sx, sy, sw, sh, dx, dy, dw, dh);
+      ctx.restore();
+    }
+
+    return await new Promise<Blob>((resolve) => {
+      canvas.toBlob((b) => resolve(b ?? blob), "image/png", 1);
     });
   } finally {
     URL.revokeObjectURL(srcUrl);
@@ -541,6 +638,13 @@ export default function ImageCreateScreen() {
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     await new Promise<void>((r) => setTimeout(r, 80));
 
+    // Collect photo positions while card is in export layout (before capture).
+    const photoOverlays = collectPhotoOverlays(el, [
+      { attr: "front", img: frontImgRef.current },
+      { attr: "side", img: sideImgRef.current },
+      { attr: "portrait", img: portraitImgRef.current },
+    ]);
+
     const br = el.getBoundingClientRect();
     const w = Math.max(2, Math.round(br.width));
     let h = Math.max(2, Math.round(br.height));
@@ -638,6 +742,12 @@ export default function ImageCreateScreen() {
         console.error("PNG export failed after html2canvas + html-to-image:", lastErr);
         return;
       }
+
+      // Guarantee user photos are on the raster — draw directly via Canvas 2D.
+      if (photoOverlays.length > 0) {
+        blob = await compositePhotosOnBlob(blob, photoOverlays);
+      }
+
       const finalBlob = (await normalizeToTikTokSize(blob)) ?? blob;
       downloadPngBlob(
         finalBlob,
@@ -1391,7 +1501,7 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
       >
       <div className={cn("flex justify-center gap-7 w-full shrink-0", !hasSide && "justify-center")}>
         <div className="flex flex-col items-center">
-          <HarmonyFacePhoto src={frontPreview} />
+          <HarmonyFacePhoto src={frontPreview} photoId="front" />
           {hasSide && (
             <>
               <div className="text-[1.15rem] font-bold text-[#4A7FD4] mt-2 tabular-nums">{frontScore.toFixed(1)}</div>
@@ -1401,7 +1511,7 @@ const HarmonyPreview = forwardRef<HTMLDivElement, HarmonyPreviewProps>(function 
         </div>
         {hasSide && (
           <div className="flex flex-col items-center">
-            <HarmonyFacePhoto src={sidePreview} />
+            <HarmonyFacePhoto src={sidePreview} photoId="side" />
             <div className="text-[1.15rem] font-bold text-[#4A7FD4] mt-2 tabular-nums">{sideScore.toFixed(1)}</div>
             <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-[0.14em]">{L.side}</div>
           </div>
