@@ -259,22 +259,26 @@ async function normalizeToTikTokSize(blob: Blob): Promise<Blob | null> {
     ctx.fillStyle = SHARE_CARD_EXPORT_BG;
     ctx.fillRect(0, 0, TIKTOK_EXPORT_WIDTH, TIKTOK_EXPORT_HEIGHT);
 
-    const targetRatio = TIKTOK_EXPORT_WIDTH / TIKTOK_EXPORT_HEIGHT;
+    const tw = TIKTOK_EXPORT_WIDTH;
+    const th = TIKTOK_EXPORT_HEIGHT;
     const srcRatio = img.width / img.height;
-    let drawW = TIKTOK_EXPORT_WIDTH;
-    let drawH = TIKTOK_EXPORT_HEIGHT;
-    let drawX = 0;
-    let drawY = 0;
+    const targetRatio = tw / th;
 
-    // Cover-fit to guarantee exact 9:16 output even if the source card bounds are slightly off.
+    // Contain-fit: never crop the card (cover was clipping footer/icons when aspect differed by a few px).
+    let drawW: number;
+    let drawH: number;
+    let drawX: number;
+    let drawY: number;
     if (srcRatio > targetRatio) {
-      drawH = TIKTOK_EXPORT_HEIGHT;
-      drawW = drawH * srcRatio;
-      drawX = (TIKTOK_EXPORT_WIDTH - drawW) / 2;
+      drawW = tw;
+      drawH = tw / srcRatio;
+      drawX = 0;
+      drawY = (th - drawH) / 2;
     } else {
-      drawW = TIKTOK_EXPORT_WIDTH;
-      drawH = drawW / srcRatio;
-      drawY = (TIKTOK_EXPORT_HEIGHT - drawH) / 2;
+      drawH = th;
+      drawW = th * srcRatio;
+      drawY = 0;
+      drawX = (tw - drawW) / 2;
     }
 
     ctx.drawImage(img, drawX, drawY, drawW, drawH);
@@ -633,10 +637,6 @@ export default function ImageCreateScreen() {
     }
 
     await preloadShareCardFonts();
-    await warmAndInlineDomImages(el);
-
-    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-    await new Promise<void>((r) => setTimeout(r, 50));
 
     // `mx-auto` → large L/R margins in a wide column; zero margins so clone matches export (lookslabmedia-next).
     const prevCardMarginLeft = el.style.marginLeft;
@@ -708,8 +708,16 @@ export default function ImageCreateScreen() {
     const mobile = isLikelyMobileExportHost();
     await warmAndInlineDomImages(el);
 
+    // Hide face `<img>`s during raster capture so we never double-draw (DOM + composite).
+    // Gradients, borders, and rings stay in the PNG; photos are painted once in compositePhotosOnBlob.
+    const faceImgs = Array.from(el.querySelectorAll<HTMLImageElement>("[data-face-photo] img"));
+    faceImgs.forEach((img) => {
+      img.style.opacity = "0";
+    });
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+    let blob: Blob | null = null;
     try {
-      let blob: Blob | null = null;
       let lastErr: unknown;
 
       const tryHtmlToImage = async () => {
@@ -729,25 +737,32 @@ export default function ImageCreateScreen() {
         return null;
       };
 
-      if (mobile) {
-        blob = await tryHtmlToImage();
-        if (!blob) {
-          try {
-            blob = await cardToPngBlobHtml2Canvas(el, targetW, { maxScale: 2 });
-          } catch (h2cErr) {
-            lastErr = h2cErr;
-            console.warn("html2canvas (mobile) failed:", h2cErr);
-          }
+      const tryHtml2CanvasMobile = async () => {
+        try {
+          return await cardToPngBlobHtml2Canvas(el, targetW);
+        } catch (e) {
+          lastErr = e;
         }
+        try {
+          return await cardToPngBlobHtml2Canvas(el, targetW, { maxScale: 2 });
+        } catch (e) {
+          lastErr = e;
+        }
+        try {
+          return await cardToPngBlobHtml2Canvas(el, targetW, {
+            maxScale: 2,
+            foreignObjectRendering: true,
+          });
+        } catch (e) {
+          lastErr = e;
+        }
+        return null;
+      };
+
+      if (mobile) {
+        blob = await tryHtml2CanvasMobile();
         if (!blob) {
-          try {
-            blob = await cardToPngBlobHtml2Canvas(el, targetW, {
-              maxScale: 2,
-              foreignObjectRendering: true,
-            });
-          } catch (h2cErr) {
-            lastErr = h2cErr;
-          }
+          blob = await tryHtmlToImage();
         }
       } else {
         try {
@@ -766,8 +781,7 @@ export default function ImageCreateScreen() {
         return;
       }
 
-      // On mobile, DOM capture may fail for user photos — composite them on canvas as safety net.
-      if (mobile && photoOverlays.length > 0) {
+      if (photoOverlays.length > 0) {
         blob = await compositePhotosOnBlob(blob, photoOverlays);
       }
 
@@ -779,6 +793,9 @@ export default function ImageCreateScreen() {
     } catch (e) {
       console.error("PNG export failed:", e);
     } finally {
+      faceImgs.forEach((img) => {
+        img.style.opacity = "";
+      });
       el.style.width = prevExportBox.width;
       el.style.minWidth = prevExportBox.minWidth;
       el.style.maxWidth = prevExportBox.maxWidth;
