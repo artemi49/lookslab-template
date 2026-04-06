@@ -43,6 +43,18 @@ export function percentileToScore(topPercent: number): number {
   return Math.round(Math.max(0, Math.min(10, score)) * 10) / 10;
 }
 
+/**
+ * Same calibration as `percentileToScore` but **not** rounded to 0.1 — use for curve marker
+ * so the dot follows the Top-% slider smoothly in Custom mode.
+ */
+export function topPercentToCurveScore(topPercent: number): number {
+  const p = clampTopPercentDecimal(topPercent);
+  const k = 1.1;
+  const midpoint = 5.0;
+  const score = midpoint + Math.log(100 / p - 1) / k;
+  return Math.max(0, Math.min(10, score));
+}
+
 export type CardLocale = 'en' | 'de';
 
 /** Human-friendly "Top X%" / "Bottom X%" bucket label derived from raw percentile. */
