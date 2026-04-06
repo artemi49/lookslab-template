@@ -339,23 +339,6 @@ async function normalizeToTikTokSize(blob: Blob, mobile: boolean): Promise<Blob 
   }
 }
 
-/**
- * While the face `<img>` is hidden for capture, Tailwind `ring` + `shadow-*` on the wrapper still rasterize.
- * On mobile, engines often smear those as rectangular blue halos beside the circle. Only strip `box-shadow`
- * (ring + drop shadow) — keep gradient background so the avatar frame still looks right; avoid `filter` /
- * `background-*` overrides that broke full-card capture (missing chrome + footer icons) on some WebKit builds.
- */
-function neutralizeFacePhotoContainersForCapture(containers: HTMLElement[]): () => void {
-  for (const c of containers) {
-    c.style.setProperty("box-shadow", "none", "important");
-  }
-  return () => {
-    for (const c of containers) {
-      c.style.removeProperty("box-shadow");
-    }
-  };
-}
-
 /* ── Canvas compositing: draw user photos directly onto the captured PNG ─────
  * Both html2canvas and html-to-image frequently drop user photos on iOS/WebKit.
  * After any capture, we locate the photo circles via `data-face-photo`, then
@@ -378,6 +361,8 @@ type PhotoOverlay = {
   hFrac: number;
   /** CSS border-width as fraction of container width — used to inset the composited circle. */
   borderFrac: number;
+  /** CSS border-color of the container — compositing paints this as a filled ring. */
+  borderColor: string;
 };
 
 function bakeFaceSnapshot(img: HTMLImageElement): HTMLCanvasElement | null {
@@ -410,10 +395,11 @@ async function collectPhotoOverlaysFromDomAsync(
     const statePixelUrl = photoId ? (stateUrlsByPhotoId[photoId] ?? null) : null;
 
     const img = container.querySelector<HTMLImageElement>("img");
+    const cs = getComputedStyle(container);
     if (!img || !img.src) {
       if (statePixelUrl) {
         const r = container.getBoundingClientRect();
-        const border = parseFloat(getComputedStyle(container).borderWidth) || 0;
+        const border = parseFloat(cs.borderWidth) || 0;
         overlays.push({
           img: img ?? document.createElement("img"),
           snapshot: null,
@@ -423,6 +409,7 @@ async function collectPhotoOverlaysFromDomAsync(
           wFrac: r.width / cardRect.width,
           hFrac: r.height / cardRect.height,
           borderFrac: border / r.width,
+          borderColor: cs.borderColor || "#ffffff",
         });
       }
       continue;
@@ -436,7 +423,7 @@ async function collectPhotoOverlaysFromDomAsync(
     if (!hasDims && !statePixelUrl) continue;
 
     const r = container.getBoundingClientRect();
-    const border = parseFloat(getComputedStyle(container).borderWidth) || 0;
+    const border = parseFloat(cs.borderWidth) || 0;
     overlays.push({
       img,
       snapshot: hasDims ? bakeFaceSnapshot(img) : null,
@@ -446,6 +433,7 @@ async function collectPhotoOverlaysFromDomAsync(
       wFrac: r.width / cardRect.width,
       hFrac: r.height / cardRect.height,
       borderFrac: border / r.width,
+      borderColor: cs.borderColor || "#ffffff",
     });
   }
   return overlays;
@@ -526,6 +514,17 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
         sy = (srcH - sh) / 2;
       }
 
+      const outerRadius = Math.min(dw, dh) / 2;
+
+      // 1. Draw filled border circle (replaces container border the rasterizer may have mangled).
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
+      ctx.fillStyle = o.borderColor;
+      ctx.fill();
+      ctx.restore();
+
+      // 2. Draw the photo with circular clipping inset by border width.
       ctx.save();
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -864,14 +863,11 @@ export default function ImageCreateScreen() {
     // After warm: geometry from DOM; pixels prefer React state URLs (Mobile Chrome) then snapshot, then `<img>`.
     const photoOverlays = await collectPhotoOverlaysFromDomAsync(el, faceStateUrls);
 
-    // Hide face `<img>`s during raster capture so we never double-draw (DOM + composite).
-    // Wrapper box-shadow (ring + drop shadow) stripped for capture only — reduces mobile halo; gradient stays.
+    // Hide entire face containers during capture; compositing repaints them as clean Canvas 2D circles.
+    // visibility:hidden keeps layout intact (getBoundingClientRect still works) but prevents the rasterizer
+    // from drawing the container's gradient/ring/shadow — those cause rectangular artifacts on mobile.
     const faceContainers = Array.from(el.querySelectorAll<HTMLElement>("[data-face-photo]"));
-    const restoreFaceContainers = neutralizeFacePhotoContainersForCapture(faceContainers);
-    const faceImgs = Array.from(el.querySelectorAll<HTMLImageElement>("[data-face-photo] img"));
-    faceImgs.forEach((img) => {
-      img.style.opacity = "0";
-    });
+    faceContainers.forEach((c) => { c.style.visibility = "hidden"; });
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 
     let blob: Blob | null = null;
@@ -951,10 +947,7 @@ export default function ImageCreateScreen() {
     } catch (e) {
       console.error("PNG export failed:", e);
     } finally {
-      restoreFaceContainers();
-      faceImgs.forEach((img) => {
-        img.style.opacity = "";
-      });
+      faceContainers.forEach((c) => { c.style.visibility = ""; });
       el.style.width = prevExportBox.width;
       el.style.minWidth = prevExportBox.minWidth;
       el.style.maxWidth = prevExportBox.maxWidth;
