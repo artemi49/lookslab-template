@@ -340,23 +340,18 @@ async function normalizeToTikTokSize(blob: Blob, mobile: boolean): Promise<Blob 
 }
 
 /**
- * While the face `<img>` is hidden for capture, gradient + ring + box-shadow on the wrapper still rasterize.
- * On mobile, html2canvas / html-to-image often draw those as smeared rectangular blue halos; composite only
- * repaints the photo inside the circle, so we flatten the frame to white + no shadow for one clean pass.
+ * While the face `<img>` is hidden for capture, Tailwind `ring` + `shadow-*` on the wrapper still rasterize.
+ * On mobile, engines often smear those as rectangular blue halos beside the circle. Only strip `box-shadow`
+ * (ring + drop shadow) — keep gradient background so the avatar frame still looks right; avoid `filter` /
+ * `background-*` overrides that broke full-card capture (missing chrome + footer icons) on some WebKit builds.
  */
 function neutralizeFacePhotoContainersForCapture(containers: HTMLElement[]): () => void {
   for (const c of containers) {
     c.style.setProperty("box-shadow", "none", "important");
-    c.style.setProperty("background-color", "#ffffff", "important");
-    c.style.setProperty("background-image", "none", "important");
-    c.style.setProperty("filter", "none", "important");
   }
   return () => {
     for (const c of containers) {
       c.style.removeProperty("box-shadow");
-      c.style.removeProperty("background-color");
-      c.style.removeProperty("background-image");
-      c.style.removeProperty("filter");
     }
   };
 }
@@ -870,7 +865,7 @@ export default function ImageCreateScreen() {
     const photoOverlays = await collectPhotoOverlaysFromDomAsync(el, faceStateUrls);
 
     // Hide face `<img>`s during raster capture so we never double-draw (DOM + composite).
-    // Wrapper gradient/ring/shadow are stripped for capture (mobile halo bug); white border stays from CSS.
+    // Wrapper box-shadow (ring + drop shadow) stripped for capture only — reduces mobile halo; gradient stays.
     const faceContainers = Array.from(el.querySelectorAll<HTMLElement>("[data-face-photo]"));
     const restoreFaceContainers = neutralizeFacePhotoContainersForCapture(faceContainers);
     const faceImgs = Array.from(el.querySelectorAll<HTMLImageElement>("[data-face-photo] img"));
