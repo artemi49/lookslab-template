@@ -884,17 +884,26 @@ export default function ImageCreateScreen() {
         for (const attempt of exportAttempts) {
           const shell = document.createElement("div");
           shell.setAttribute("aria-hidden", "true");
-          shell.style.cssText = `position:fixed;left:-10000px;top:0;pointer-events:none;margin:0;padding:0;border:0;width:${w}px;height:${h}px;overflow:hidden;`;
+          // No fixed height + no overflow:hidden — mobile layout can be 1–3px taller than getBoundingClientRect
+          // on the live node; clipping removed footer (App Store / Safari icons).
+          shell.style.cssText =
+            "position:fixed;left:-10000px;top:0;pointer-events:none;margin:0;padding:0;border:0;overflow:visible;";
           const clone = el.cloneNode(true) as HTMLElement;
           hideFacePhotoContainersInSubtree(clone);
           shell.appendChild(clone);
           document.body.appendChild(shell);
           try {
+            await new Promise<void>((r) => requestAnimationFrame(() => r()));
+            void clone.offsetHeight;
+            const crClone = clone.getBoundingClientRect();
+            const cw = Math.max(w, Math.ceil(crClone.width));
+            const ch = Math.max(h, Math.ceil(crClone.height));
+
             const b = await toBlob(clone, {
               ...commonOpts,
               skipFonts: true,
               pixelRatio: attempt.pixelRatio,
-              ...(attempt.useMeasuredSize ? {} : { width: w, height: h }),
+              ...(attempt.useMeasuredSize ? {} : { width: cw, height: ch }),
             });
             if (b) return b;
           } catch (err) {
