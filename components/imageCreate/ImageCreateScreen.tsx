@@ -551,6 +551,13 @@ type Html2CanvasExportExtra = {
   foreignObjectRendering?: boolean;
 };
 
+/** Only for capture clones — never the live preview (avoids visible flash on Download). */
+function hideFacePhotoContainersInSubtree(root: HTMLElement): void {
+  root.querySelectorAll<HTMLElement>("[data-face-photo]").forEach((c) => {
+    c.style.visibility = "hidden";
+  });
+}
+
 async function cardToPngBlobHtml2Canvas(
   el: HTMLElement,
   targetWidth: number,
@@ -600,6 +607,8 @@ async function cardToPngBlobHtml2Canvas(
           node.style.setProperty("-webkit-backdrop-filter", "none");
         }
       });
+
+      hideFacePhotoContainersInSubtree(clonedEl);
     },
   });
   return canvasToPngBlob(canvas);
@@ -861,21 +870,21 @@ export default function ImageCreateScreen() {
     // After warm: geometry from DOM; pixels prefer React state URLs (Mobile Chrome) then snapshot, then `<img>`.
     const photoOverlays = await collectPhotoOverlaysFromDomAsync(el, faceStateUrls);
 
-    // Hide entire face containers during capture; compositing repaints them as clean Canvas 2D circles.
-    // visibility:hidden keeps layout intact (getBoundingClientRect still works) but prevents the rasterizer
-    // from drawing the container's gradient/ring/shadow — those cause rectangular artifacts on mobile.
-    const faceContainers = Array.from(el.querySelectorAll<HTMLElement>("[data-face-photo]"));
-    faceContainers.forEach((c) => { c.style.visibility = "hidden"; });
-    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-
     let blob: Blob | null = null;
     try {
       let lastErr: unknown;
 
       const tryHtmlToImage = async () => {
         for (const attempt of exportAttempts) {
+          const shell = document.createElement("div");
+          shell.setAttribute("aria-hidden", "true");
+          shell.style.cssText = `position:fixed;left:-10000px;top:0;pointer-events:none;margin:0;padding:0;border:0;width:${w}px;height:${h}px;overflow:hidden;`;
+          const clone = el.cloneNode(true) as HTMLElement;
+          hideFacePhotoContainersInSubtree(clone);
+          shell.appendChild(clone);
+          document.body.appendChild(shell);
           try {
-            const b = await toBlob(el, {
+            const b = await toBlob(clone, {
               ...commonOpts,
               skipFonts: true,
               pixelRatio: attempt.pixelRatio,
@@ -884,6 +893,8 @@ export default function ImageCreateScreen() {
             if (b) return b;
           } catch (err) {
             lastErr = err;
+          } finally {
+            shell.remove();
           }
         }
         return null;
@@ -945,7 +956,6 @@ export default function ImageCreateScreen() {
     } catch (e) {
       console.error("PNG export failed:", e);
     } finally {
-      faceContainers.forEach((c) => { c.style.visibility = ""; });
       el.style.width = prevExportBox.width;
       el.style.minWidth = prevExportBox.minWidth;
       el.style.maxWidth = prevExportBox.maxWidth;
