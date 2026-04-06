@@ -467,20 +467,46 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
     ctx.drawImage(bg, 0, 0, canvas.width, canvas.height);
 
     for (const o of overlays) {
-      const resolved = await resolvePhotoOverlaySource(o);
-      if (!resolved) continue;
-      const { source, srcW, srcH } = resolved;
-
       const dx = o.xFrac * canvas.width;
       const dy = o.yFrac * canvas.height;
       const dw = o.wFrac * canvas.width;
       const dh = o.hFrac * canvas.height;
       const cx = dx + dw / 2;
       const cy = dy + dh / 2;
-      const borderPx = o.borderFrac * dw;
-      const radius = Math.min(dw, dh) / 2 - borderPx;
+      const borderPx = Math.max(0, (Number.isFinite(o.borderFrac) ? o.borderFrac : 0) * dw);
+      const outerRadius = Math.min(dw, dh) / 2;
+      const innerR = Math.max(0, outerRadius - borderPx);
 
-      if (srcW === 0 || srcH === 0) continue;
+      // Always paint the frame + inner disk so the circle appears even if the photo fails to load.
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
+      ctx.fillStyle = o.borderColor;
+      ctx.fill();
+      ctx.restore();
+
+      if (innerR > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, innerR, 0, Math.PI * 2);
+        ctx.closePath();
+        if (o.frameStyle === "portrait") {
+          ctx.fillStyle = "rgba(191, 222, 254, 0.55)";
+        } else {
+          const g = ctx.createLinearGradient(cx, cy - innerR, cx, cy + innerR);
+          g.addColorStop(0, "#e8f2ff");
+          g.addColorStop(1, "#d4e5fc");
+          ctx.fillStyle = g;
+        }
+        ctx.fill();
+        ctx.restore();
+      }
+
+      const resolved = await resolvePhotoOverlaySource(o);
+      if (!resolved) continue;
+      const { source, srcW, srcH } = resolved;
+      if (srcW < 1 || srcH < 1 || innerR < 1) continue;
+
       const destRatio = dw / dh;
       const srcRatio = srcW / srcH;
       let sw: number, sh: number, sx: number, sy: number;
@@ -496,43 +522,23 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
         sy = (srcH - sh) / 2;
       }
 
-      const outerRadius = Math.min(dw, dh) / 2;
-
-      // 1. Border ring (same as DOM).
       ctx.save();
       ctx.beginPath();
-      ctx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
-      ctx.fillStyle = o.borderColor;
-      ctx.fill();
-      ctx.restore();
-
-      // 2. Inner disk: gradient / tint behind the photo (container is visibility:hidden during capture).
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.closePath();
-      if (o.frameStyle === "portrait") {
-        ctx.fillStyle = "rgba(191, 222, 254, 0.55)";
-      } else {
-        const g = ctx.createLinearGradient(cx, cy - radius, cx, cy + radius);
-        g.addColorStop(0, "#e8f2ff");
-        g.addColorStop(1, "#d4e5fc");
-        ctx.fillStyle = g;
-      }
-      ctx.fill();
-      ctx.restore();
-
-      // 3. Photo on top (object-cover in circular clip).
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.arc(cx, cy, innerR, 0, Math.PI * 2);
       ctx.closePath();
       ctx.clip();
       ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
       ctx.restore();
     }
 
-    return (await canvasToPngBlob(canvas)) ?? blob;
+    const out = await canvasToPngBlob(canvas);
+    if (out) return out;
+    try {
+      const res = await fetch(canvas.toDataURL("image/png"));
+      return await res.blob();
+    } catch {
+      return blob;
+    }
   } finally {
     URL.revokeObjectURL(srcUrl);
   }
