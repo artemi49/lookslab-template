@@ -340,6 +340,8 @@ type PhotoOverlay = {
   borderFrac: number;
   /** CSS border-color of the container — compositing paints this as a filled ring. */
   borderColor: string;
+  /** Matches face container background in the DOM (hidden during capture). */
+  frameStyle: "harmony" | "portrait";
 };
 
 function bakeFaceSnapshot(img: HTMLImageElement): HTMLCanvasElement | null {
@@ -370,6 +372,7 @@ async function collectPhotoOverlaysFromDomAsync(
   for (const container of containers) {
     const photoId = container.getAttribute("data-face-photo") ?? "";
     const statePixelUrl = photoId ? (stateUrlsByPhotoId[photoId] ?? null) : null;
+    const frameStyle: "harmony" | "portrait" = photoId === "portrait" ? "portrait" : "harmony";
 
     const img = container.querySelector<HTMLImageElement>("img");
     const cs = getComputedStyle(container);
@@ -387,6 +390,7 @@ async function collectPhotoOverlaysFromDomAsync(
           hFrac: r.height / cardRect.height,
           borderFrac: border / r.width,
           borderColor: cs.borderColor || "#ffffff",
+          frameStyle,
         });
       }
       continue;
@@ -411,6 +415,7 @@ async function collectPhotoOverlaysFromDomAsync(
       hFrac: r.height / cardRect.height,
       borderFrac: border / r.width,
       borderColor: cs.borderColor || "#ffffff",
+      frameStyle,
     });
   }
   return overlays;
@@ -493,7 +498,7 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
 
       const outerRadius = Math.min(dw, dh) / 2;
 
-      // 1. Draw filled border circle (replaces container border the rasterizer may have mangled).
+      // 1. Border ring (same as DOM).
       ctx.save();
       ctx.beginPath();
       ctx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
@@ -501,7 +506,23 @@ async function compositePhotosOnBlob(blob: Blob, overlays: PhotoOverlay[]): Prom
       ctx.fill();
       ctx.restore();
 
-      // 2. Draw the photo with circular clipping inset by border width.
+      // 2. Inner disk: gradient / tint behind the photo (container is visibility:hidden during capture).
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.closePath();
+      if (o.frameStyle === "portrait") {
+        ctx.fillStyle = "rgba(191, 222, 254, 0.55)";
+      } else {
+        const g = ctx.createLinearGradient(cx, cy - radius, cx, cy + radius);
+        g.addColorStop(0, "#e8f2ff");
+        g.addColorStop(1, "#d4e5fc");
+        ctx.fillStyle = g;
+      }
+      ctx.fill();
+      ctx.restore();
+
+      // 3. Photo on top (object-cover in circular clip).
       ctx.save();
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
