@@ -13,6 +13,7 @@ import {
   scoreBasedCurvePaths,
   scoreBasedMarkerX,
   SCORE_SECTIONS,
+  topPercentToCurveScore,
   type CardLocale,
 } from "@/lib/analysis";
 import { preloadShareCardFonts, type MetricRow } from "@/lib/shareCardCanvas";
@@ -199,25 +200,18 @@ function toneFromPercent(percent: number): NonNullable<MetricRow["tone"]> {
   return "rose";
 }
 
-/** Custom Top %: shift metric bar % vs score-implied top; align Harmony row value with that rank. */
+/** Custom Top %: shift metric bar % vs score-implied top; row values (e.g. Harmony /10) stay unchanged. */
 function metricsRowsWithManualPopulationRank(
   rows: MetricRow[],
-  locale: CardLocale,
   combinedScore: number,
   populationTopPercent: number
 ): MetricRow[] {
   const topFromScore = calculatePercentileTopDecimal(combinedScore);
   const delta = topFromScore - populationTopPercent;
-  const scoreAtRank = percentileToScore(populationTopPercent);
-  const harmonyVal =
-    locale === "de" ? scoreAtRank.toFixed(1).replace(".", ",") : scoreAtRank.toFixed(1);
 
   return rows.map((row) => {
-    const preset = METRIC_PRESETS.find((p) => p.label === row.label || p.labelDe === row.label);
     const shifted = Math.round(Math.max(0, Math.min(100, row.percent + delta)));
-    const next: MetricRow = { ...row, percent: shifted, tone: toneFromPercent(shifted) };
-    if (preset?.key === "harmony") next.value = harmonyVal;
-    return next;
+    return { ...row, percent: shifted, tone: toneFromPercent(shifted) };
   });
 }
 
@@ -717,10 +711,6 @@ export default function ImageCreateScreen() {
 
   const populationSliderUiValue = Math.round((100 - populationTopPercent) * 10) / 10;
 
-  const applyTopPercentPreset = (raw: number) => {
-    applyTopPctEverywhere(clampTopPercentDecimal(raw));
-  };
-
   const [title, setTitle] = useState("Your profile");
   const [subtitle, setSubtitle] = useState("Harmony map");
   const [metricRows, setMetricRows] = useState<MetricRow[]>(defaultMetricsEn);
@@ -746,13 +736,9 @@ export default function ImageCreateScreen() {
   }, [autoCombined, frontScore, sideScore, sidePreview, cardLang]);
 
   useEffect(() => {
-    const scoreForTier =
-      populationRankSource === "manual"
-        ? percentileToScore(populationTopPercent)
-        : combinedScore;
-    const p = calculatePercentile(scoreForTier);
+    const p = calculatePercentile(combinedScore);
     setPercentileLabel(getPercentileLabelLocalized(p, cardLang));
-  }, [combinedScore, cardLang, populationRankSource, populationTopPercent]);
+  }, [combinedScore, cardLang]);
 
   useEffect(() => {
     const titlePairs = [["Your profile", "Dein Profil"], ["Harmony map", "Harmonie-Karte"]] as const;
@@ -1046,38 +1032,43 @@ export default function ImageCreateScreen() {
 
   const combinedDisplay = useMemo(() => combinedScore.toFixed(1), [combinedScore]);
 
-  const applyTopPctEverywhere = useCallback((topPct: number) => {
-    const score = percentileToScore(topPct);
+  const applyTopPercentFromUi = useCallback((topPct: number) => {
+    const t = clampTopPercentDecimal(topPct);
     if (populationRankSourceRef.current === "manual") {
-      setPopulationTopOverride(topPct);
+      setPopulationTopOverride(t);
+    } else {
+      setCombinedScore(percentileToScore(t));
     }
-    setCombinedScore(score);
   }, []);
 
   const handlePopulationSliderValue = useCallback((raw: string) => {
     const num = parseFloat(raw);
     if (!Number.isFinite(num)) return;
-    applyTopPctEverywhere(clampTopPercentDecimal(100 - num));
-  }, [applyTopPctEverywhere]);
+    applyTopPercentFromUi(100 - num);
+  }, [applyTopPercentFromUi]);
 
   const handleHarmonyCurveScore = useCallback((s: number) => {
     if (populationRankSourceRef.current === "manual") {
       setPopulationTopOverride(calculatePercentileTopDecimal(s));
+    } else {
+      setCombinedScore(s);
     }
-    setCombinedScore(s);
   }, []);
+
+  const applyTopPercentPreset = useCallback(
+    (raw: number) => applyTopPercentFromUi(raw),
+    [applyTopPercentFromUi]
+  );
 
   const metricsRowsForPreview = useMemo(() => {
     if (populationRankSource !== "manual") return metricRows;
-    return metricsRowsWithManualPopulationRank(
-      metricRows,
-      cardLang,
-      combinedScore,
-      populationTopPercent
-    );
-  }, [metricRows, populationRankSource, cardLang, combinedScore, populationTopPercent]);
+    return metricsRowsWithManualPopulationRank(metricRows, combinedScore, populationTopPercent);
+  }, [metricRows, populationRankSource, combinedScore, populationTopPercent]);
 
-  const harmonyCurveMarkerScore = combinedScore;
+  const harmonyCurveMarkerScore =
+    populationRankSource === "manual"
+      ? topPercentToCurveScore(populationTopPercent)
+      : combinedScore;
 
   const updateMetric = (i: number, patch: Partial<MetricRow>) => {
     setMetricRows((prev) => {
@@ -1276,7 +1267,6 @@ export default function ImageCreateScreen() {
                           onClick={() => {
                             setPopulationRankSource("score");
                             setPopulationTopOverride(null);
-                            setAutoCombined(true);
                           }}
                           className={cn(
                             "px-3 py-2 rounded-lg text-[11px] font-bold uppercase tracking-wide transition-all cursor-pointer",
@@ -1292,7 +1282,6 @@ export default function ImageCreateScreen() {
                           onClick={() => {
                             setPopulationRankSource("manual");
                             setPopulationTopOverride(calculatePercentileTopDecimal(combinedScore));
-                            setAutoCombined(false);
                           }}
                           className={cn(
                             "px-3 py-2 rounded-lg text-[11px] font-bold uppercase tracking-wide transition-all cursor-pointer",
@@ -1311,7 +1300,7 @@ export default function ImageCreateScreen() {
                       step="0.1"
                       value={populationTopPercent}
                       onChange={(v) => {
-                        applyTopPctEverywhere(clampTopPercentDecimal(Number(v) || 0.1));
+                        applyTopPercentFromUi(clampTopPercentDecimal(Number(v) || 0.1));
                       }}
                     />
                     <div>
@@ -1413,8 +1402,8 @@ export default function ImageCreateScreen() {
                   {populationRankSource === "manual" && (
                     <p className="text-[10px] text-slate-500 leading-snug">
                       {cardLang === "de"
-                        ? "Eigener Top-% (Harmony-Karte): Vorschau-Balken und Harmonie-Wert werden angepasst; Zahlen links sind die Basis."
-                        : "Custom Top % (Harmony card): preview bars and Harmony value shift; inputs are the base."}
+                        ? "Eigener Top-%: nur Rang/Kurve und Balken in der Vorschau folgen dem Regler; Combined-Score und Harmonie-Zahl bleiben wie bei den Eingaben."
+                        : "Custom Top %: only rank, curve, and preview bars follow the slider; combined score and Harmony number stay tied to your inputs."}
                     </p>
                   )}
                   <div className="space-y-3 max-h-[min(420px,52vh)] sm:max-h-[420px] overflow-y-auto custom-scroll pr-1">
