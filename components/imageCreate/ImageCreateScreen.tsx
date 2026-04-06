@@ -258,29 +258,7 @@ async function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> 
   }
 }
 
-/**
- * Mobile browsers often ignore synthetic `<a download>`; Web Share (save to Photos) works reliably.
- */
-async function offerDownloadablePng(blob: Blob, filename: string): Promise<boolean> {
-  const nav = navigator as Navigator & {
-    share?: (data: ShareData & { files?: File[] }) => Promise<void>;
-    canShare?: (data: ShareData & { files?: File[] }) => boolean;
-  };
-
-  const file = new File([blob], filename, { type: "image/png", lastModified: Date.now() });
-
-  if (typeof nav.canShare === "function" && typeof nav.share === "function") {
-    try {
-      if (nav.canShare({ files: [file] })) {
-        await nav.share({ files: [file], title: filename });
-        return true;
-      }
-    } catch (e) {
-      const name = (e as { name?: string })?.name;
-      if (name === "AbortError") return true;
-    }
-  }
-
+function downloadPngBlob(blob: Blob, filename: string): void {
   const href = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = href;
@@ -291,7 +269,6 @@ async function offerDownloadablePng(blob: Blob, filename: string): Promise<boole
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(href), 120_000);
-  return true;
 }
 
 function tiktokExportDimensions(mobile: boolean): { tw: number; th: number } {
@@ -943,7 +920,7 @@ export default function ImageCreateScreen() {
       const finalBlob = (await normalizeToTikTokSize(blob, mobile)) ?? blob;
       const filename =
         mode === "harmony" ? "lookslab-harmony-card.png" : "lookslab-metrics-card.png";
-      await offerDownloadablePng(finalBlob, filename);
+      downloadPngBlob(finalBlob, filename);
     } catch (e) {
       console.error("PNG export failed:", e);
     } finally {
